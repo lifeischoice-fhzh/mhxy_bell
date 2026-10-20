@@ -41,7 +41,7 @@ python tests.py --quiet      # 回归测试(200 条)
 界面  ui/*.py           bell(小窗,唯一窗口) / widgets(摆位/动效/皮肤)
 逻辑  tools/bell.py     BellTool:自己的线程/状态/扫描循环
 地基  core.py           配置(app+bell 两分区)/OCR/截图/窗口枚举/Engine
-数据  data/maps/*       底图(官方美术,不进仓库)+ bounds/calib 标定
+数据  data/maps/*       底图(六张,随仓库分发)+ bounds/calib 标定
       data/bell_layouts.json   各分辨率下对话框/任务栏的位置表
 ```
 
