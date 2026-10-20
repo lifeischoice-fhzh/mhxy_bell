@@ -1,0 +1,31 @@
+# 运行时产物(每台机器各不相同)
+config.json
+bell.log
+bell.log.old
+bell.log.*
+
+# 可再生成的缓存
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# 构建产物
+build/
+dist/
+
+# 依赖
+.venv/
+
+# 本地改动备份
+.backup_*/
+
+# 临时探针/截图(跑完就该删,别进仓库)
+_*.py
+_*.png
+_ui_tmp/
+
+# 降妖伏魔的地图底图:从游戏画面截出来的是官方美术,**不进仓库**(也不进安装包)。
+# 只保留自有数据:bounds.json(各图坐标范围)/calib.json(坐标↔像素标定)/
+# bell_layouts.json(对话框和剑槽的位置),这些是量出来的数字,没有版权问题。
+# 你录的底图留在本地就能用(应用按程序目录/data/maps 找)。
+data/maps/*.png
