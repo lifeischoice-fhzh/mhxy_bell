@@ -11,7 +11,6 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -108,25 +107,6 @@ _KEY_SECTION = {k: s for s, ks in CONFIG_SECTIONS.items() for k in ks}
 def key_section(key: str):
     """配置键 -> 分区名;认不出的键返回 None(调用方自行兜底/告警)。"""
     return _KEY_SECTION.get(key)
-
-
-# 日志归属:小窗的日志区只显示降妖伏魔自己的行,别的行只进文件。
-# 判断靠消息里的 [模块] 前缀 —— 前缀就是各处自己写的,不用每个调用点都带参数。
-LOG_SCOPE = {
-    "bell": ("铃铛", "降妖伏魔"),
-}
-
-
-def log_scope(msg: str) -> str:
-    """一条日志属于哪个功能;返回 "" 表示公共的。"""
-    m = re.match(r"\[([^\]\s]+)", (msg or "").strip())
-    if not m:
-        return ""
-    tag = m.group(1)
-    for scope, tags in LOG_SCOPE.items():
-        if any(tag.startswith(t) for t in tags):
-            return scope
-    return ""
 
 
 def split_config(cfg: dict) -> dict:
@@ -351,58 +331,76 @@ class Ocr:
     def recognize(self, img_bgr) -> str:
         return "".join(b["text"] for b in self.recognize_blocks(img_bgr))
 
-    def _infer(self, img_bgr, limit_side=None):
-        """跑一次推理。limit_side 临时改 det 的输入下限(改完还原)。
+    def _infer(self, img_bgr, limit_side=None, limit_type=None):
+        """跑一次推理。limit_side / limit_type 临时改 det 的缩放(改完还原)。
 
-        det 的下限是引擎实例上的一个属性,整段在锁里做 —— 两个线程同时识别也
+        limit_type 是 det 拿哪个边长去对 limit_side:**min**(默认)=短边不够就放大,
+        **max** =长边超了才缩小。字本来就大的那块传 max + 一个够大的边长,就是
+        "按原像素跑、别白放大"。
+
+        det 的这两个属性挂在引擎实例上,整段在锁里做 —— 两个线程同时识别也
         不会互相看到对方的临时值。取不到那个属性(库换实现)就按默认跑。
         """
         with self._lock:
             eng = self._get()
             det = getattr(eng, "text_det", None)
             old = getattr(det, "limit_side_len", None)
+            old_type = getattr(det, "limit_type", None)
             if limit_side and old is not None:
                 try:
                     det.limit_side_len = int(limit_side)
                 except Exception:
                     old = None
+            if limit_type and old_type is not None:
+                try:
+                    det.limit_type = str(limit_type)
+                except Exception:
+                    old_type = None
             try:
                 result, _ = eng(img_bgr, use_cls=False)
             finally:
                 if old is not None:
                     det.limit_side_len = old
+                if old_type is not None:
+                    det.limit_type = old_type
         return result or []
 
     def _fallback_to_cpu(self, err):
         """GPU 运行中出错时,重建为 CPU 引擎,保证识别不中断。
 
-        重建也进锁:引擎的创建一律发生在 self._lock 里(_get 同理),两个
-        线程同时走到这里也只会排队建一份,不会各建一份再互相覆盖(白占
-        一份模型内存)。重建要一两秒,锁外等着的那条本来就是想用引擎的。
+        重建也进锁:引擎的创建一律发生在 self._lock 里(_get 同理)。锁里先
+        复查一次设备 —— 两条线程同时识别失败时,后进锁的那条发现已经回退过
+        就直接回去,不会把先建好的那份 CPU 引擎再建一遍(白占一份模型内存)。
         """
-        self._log(f"[OCR]GPU 识别异常({err}),自动回退 CPU")
         try:
             from rapidocr_onnxruntime import RapidOCR
             with self._lock:
+                if not str(self.device).startswith("GPU"):
+                    return
+                self._log(f"[OCR]GPU 识别异常({err}),自动回退 CPU")
                 self._engine = RapidOCR()
                 self.device = "CPU(已回退)"
         except Exception as e:
             self._log(f"[OCR]CPU 引擎重建失败: {e}")
 
-    def recognize_blocks(self, img_bgr, limit_side=None):
+    def recognize_blocks(self, img_bgr, limit_side=None, limit_type=None):
         """返回带坐标的文本块列表,按 (y, x) 排序。
 
         limit_side: 这一次识别的 det 输入下限(默认跟着引擎配置 736)。
         小图会被 det 放大到这个下限再检测 —— 识别准一点,但**很贵**(一块
         860x240 的小区域放大到 2840x736 再跑 det)。只扫游戏界面里的一小块时
         调小它,又快又不掉准头(实测调小后连"朱紫国"都读得更对)。
+
+        limit_type: "min"(默认,短边不足就放大)/ "max"(长边超了才缩小)。
+        字本来就大的那块(对话框条带)传 max + 足够大的 limit_side,就是按
+        原像素跑 det —— 实测比放大到 480 快四成,读出来的东西一样。
         """
         try:
-            result = self._infer(img_bgr, limit_side)
+            result = self._infer(img_bgr, limit_side, limit_type)
         except Exception as e:
             if str(self.device).startswith("GPU"):
                 self._fallback_to_cpu(e)
-                result = self._infer(img_bgr, limit_side)   # CPU 重试一次
+                result = self._infer(img_bgr, limit_side, limit_type)   # CPU 重试一次
             else:
                 raise
         if not result:

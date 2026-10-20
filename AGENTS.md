@@ -11,18 +11,19 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 ```bash
 # Python 用项目 venv(建法见 README)
 .venv/Scripts/pythonw.exe main.py        # 启动
-.venv/Scripts/python.exe tests.py --quiet # 回归:200 条,约 15 秒
+.venv/Scripts/python.exe tests.py --quiet # 回归:205 条,约 13 秒
+.venv/Scripts/python.exe check_shots.py   # 真机截图离线校验(docs/shots,10 张,约 7 秒)
 ```
 
 - Bash 工具走 Git Bash,Windows 原生命令的参数要写双斜杠(`taskkill //F //PID`)
-- 日志:`bell.log`,格式 `[HH:MM:SS][模块]内容`
+- 日志:`bell.log`,格式 `YYYY-MM-DD HH:MM:SS [模块]内容`
 - 命令行:`python main.py --layout`(量对话框位置写分辨率表)
 
 ## 目录结构与职责(五层,别混)
 
 ```
 入口  main.py      argparse + 依赖检查
-界面  ui/*.py      bell(小窗,唯一窗口) / widgets(摆位/动效/两套皮肤)
+界面  ui/*.py      bell(小窗,唯一窗口) / widgets(摆位/动效/小窗皮肤)
 逻辑  tools/bell.py BellTool:自己的线程、状态、扫描循环
 地基  core.py      配置(app/bell 两分区)/ OCR / 截图 / 窗口枚举 / Engine
 数据  data/        maps(底图+标定)、bell_layouts.json(分辨率表)
@@ -62,6 +63,10 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 六种怪的对话框/任务栏原文表、`BELL_WORDS` 话术门槛、`known_map` 地名容错、
 `_bell_scope` 圈范围、扫描门控、底图录入:全在 `docs/bell-internals.md`
 (约 70KB,**别整份读**:Grep 标题 → Read 那一小段)。
+
+- **真机截图夹具**在 `docs/shots/`(六种怪 10 张,坐标原文写在
+  `expected.json`):改 det 参数 / 解析口径之后跑 `check_shots.py` 对数。
+  它是独立进程(建真引擎);`tests.py` 只查表里文件在不在,不跑 OCR。
 
 ## 与原项目的关系
 

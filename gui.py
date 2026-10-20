@@ -140,13 +140,13 @@ class App:
         self.show_bell()              # 启动直接进降妖伏魔(单窗应用)
 
     # ---- 窗口摆位 ----
-    def _show_here(self, win, size=None, ref=None):
+    def _show_here(self, win, size=None):
         """把窗口摆到位再淡入;set_place 按请求尺寸居中(单窗应用只此一处)。
 
         显示本身交给 `pop_in`(它先设全透明再 deiconify,不然会闪一帧满不透明),
         并把这扇窗提到前面 —— 不然它可能开在游戏/浏览器后面,用户看不到。
         """
-        xy = ui_widgets.set_place(win, size=size, ref=ref)
+        xy = ui_widgets.set_place(win, size=size)
         pop_in(win, xy=xy)
         try:
             win.lift()
@@ -404,14 +404,13 @@ class App:
                  f"{cal}{note}")
         return True
 
-    def _hide_own_windows(self, form=None, over=None):
+    def _hide_own_windows(self, over=None):
         """采集前把自家窗口藏起来,只记下本来就显示着的(别把自己截进底图)。
 
         over 给了就只藏**跟它相交**的那些窗口:这次只截那一块,摆在外面的窗口
         不用动 —— 用户点的采集窗一般就在游戏外面,不动它界面就不会闪。
         """
         wins = [getattr(self, n, None) for n in ("bell_win", "root")]
-        wins.append(form)
         shown = []
         for w in wins:
             if w is None or not w.winfo_exists() or not w.winfo_viewable():

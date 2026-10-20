@@ -17,8 +17,8 @@ def freeze_screen():
 
 
 # ---- 窗口摆位与动效:所有窗口都走这一份,切来切去才不会"到处乱飞" ----
-FADE_MS, FADE_STEP_MS = 160, 25      # 淡入淡出时长 / 每帧间隔(Windows 的定时器
-#                                      粒度就是 ~16ms,帧太密反而拖长总时长)
+FADE_STEP_MS = 25                    # 淡入每帧间隔(Windows 的定时器粒度就是
+#                                     ~16ms,帧太密反而拖长总时长)
 POP_PX, POP_MS = 18, 200             # 弹出时从偏下这么多像素滑到位 / 时长
 TITLE_H = 28                         # 大致标题栏高度:居中时往上让一点
 
@@ -31,17 +31,6 @@ def win_origin(win):
     """
     try:
         return (int(win.winfo_x()), int(win.winfo_y()))
-    except Exception:
-        return None
-
-
-def window_box(win):
-    """窗口的屏幕矩形 (x, y, 宽, 高);还没映射时用请求尺寸兜底。"""
-    try:
-        w, h = win.winfo_width(), win.winfo_height()
-        if w <= 1 or h <= 1:
-            w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        return (win.winfo_rootx(), win.winfo_rooty(), w, h)
     except Exception:
         return None
 
@@ -193,92 +182,12 @@ def pop_in(win, xy=None, offset=(0, POP_PX), ms=POP_MS, show=True):
     _animate(win, frames, done=done)
 
 
-def fade_out(win, then=None, ms=FADE_MS):
-    """淡出,完了执行 then(一般是 destroy / withdraw)。"""
-    try:
-        if not win.winfo_exists():
-            raise RuntimeError("窗口没了")
-        win.attributes("-alpha", 1.0)
-    except Exception:
-        if then:
-            then()
-        return
-    steps = max(1, ms // FADE_STEP_MS)
-    frames = []
-    for i in range(1, steps + 1):
-        k = i / float(steps)
-
-        def frame(k=k):
-            win.attributes("-alpha", max(0.0, 1.0 - k))
-        frames.append(frame)
-    _animate(win, frames, done=then)
-
-
-# ---- 统一外观:主页窗口用这一套扁平卡片风(降妖伏魔小窗另有 Q版皮肤) ----
-BG, CARD = "#f0f3f8", "#ffffff"
-ACCENT, TXT, SUB = "#2f6fb0", "#1f2a3a", "#7b8794"
-BORDER = "#e2e8f0"
-
-
-def apply_theme():
-    """配好 ttk 主题与共用样式(扁平卡片风),返回调色板。
-
-    ttk.Style 是全局的,但样式得有人在窗口显示**之前**配过;每个功能窗口
-    各调一次(幂等),这样单进哪个功能都不会缺样式。
-    """
-    from tkinter import ttk
-    style = ttk.Style()
-    try:
-        style.theme_use("clam")
-    except Exception:
-        pass
-    font_base = ("Microsoft YaHei UI", 10)
-    style.configure(".", background=CARD, foreground=TXT, font=font_base)
-    style.configure("TFrame", background=CARD)
-    style.configure("TLabel", background=CARD, foreground=TXT)
-    style.configure("Hint.TLabel", background=CARD, foreground=SUB,
-                    font=("Microsoft YaHei UI", 9))
-    style.configure("Section.TLabel", background=CARD, foreground=ACCENT,
-                    font=("Microsoft YaHei UI", 10, "bold"))
-    style.configure("Big.TLabel", background=CARD, foreground=ACCENT,
-                    font=("Microsoft YaHei UI", 17, "bold"))
-    style.configure("Footnote.TLabel", background=CARD, foreground=SUB,
-                    font=("Microsoft YaHei UI", 8))
-    style.configure("OK.TLabel", background=CARD, foreground="#2f9e5f",
-                    font=("Microsoft YaHei UI", 9))
-    style.configure("TButton", background="#e9edf3", foreground=TXT,
-                    borderwidth=0, focusthickness=0, padding=(10, 5))
-    style.map("TButton", background=[("active", "#dbe3ee"),
-                                     ("pressed", "#ccd6e4")])
-    style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff")
-    style.map("Accent.TButton", background=[("active", "#3c81c6"),
-                                            ("pressed", "#255d97")])
-    style.configure("Danger.TButton", background="#f6e8e8", foreground="#a03535")
-    style.map("Danger.TButton", background=[("active", "#efd9d9")])
-    style.configure("TCheckbutton", background=CARD, foreground=TXT,
-                    focusthickness=0)
-    style.map("TCheckbutton", background=[("active", CARD)])
-    style.configure("TSpinbox", fieldbackground="#ffffff", borderwidth=1,
-                    arrowsize=13)
-    style.configure("Slot.TLabel", background="#f7f9fc", foreground=SUB,
-                    font=("Microsoft YaHei UI", 9))
-    style.configure("SlotClose.TButton", background="#f7f9fc",
-                    foreground="#9aa4b2", borderwidth=0, padding=(2, 2))
-    style.map("SlotClose.TButton",
-              background=[("active", "#f0d9d9")],
-              foreground=[("active", "#c0392b")])
-    style.configure("Horizontal.TScale", background=CARD,
-                    troughcolor="#dfe5ee", borderwidth=0)
-    return {"bg": BG, "card": CARD, "accent": ACCENT, "txt": TXT, "sub": SUB,
-            "border": BORDER}
-
-
 # ---- 降妖伏魔小窗皮肤(按用户给的梦幻西游客户端截图对齐,2026-10-21) ----
 # 深靛蓝半透明面板 + 米白正文 + 亮黄数值 + 砖红圆角按钮(「确认加点/升级/技能」
 # 那排)+ 地图框金边。字体用宋体 —— 客户端的 UI 字就是位图宋体的观感。
 # Tk 给不了圆角,按钮/牌子这些圆角外形是**用 PIL 现画成图**再塞进 ttk 的
 # (`_round_img` / `_btn_images`,以及给 ui/bell.py 用的 `bell_image()`)。
-# **样式名一律带 `Bell` 前缀**,跟 `apply_theme()` 那套不撞名 —— 两套皮肤互不踩脚。
+# **样式名一律带 `Bell` 前缀**,不会跟别处的 ttk 样式撞名。
 BELL_SKIN = {
     "bg": "#141830",          # 窗口底:深靛蓝
     "card": "#20264c",        # 面板:深靛蓝(游戏半透明面板的近似色)
@@ -421,8 +330,8 @@ def apply_bell_skin():
     """配好降妖伏魔小窗那套客户端风样式(幂等),返回调色板。
 
     调用点在 `ui/bell.py:build_bell`(**建控件之前**)。样式名一律 `Bell*`,
-    和 `apply_theme()` 那套不撞名,所以两套皮肤可以各长各的样。`ttk` 的元素和
-    图片都是**按 Tk 解释器**存的,新建 root 会重建一遍(测试里跑多个 App)。
+    不会跟别处的 ttk 样式撞名。`ttk` 的元素和图片都是**按 Tk 解释器**存的,
+    新建 root 会重建一遍(测试里跑多个 App)。
     """
     global _BELL_TK, _BELL_IMGS
     from tkinter import ttk

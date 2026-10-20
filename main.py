@@ -49,7 +49,7 @@ def main():
         return 1
 
     if args.layout:
-        from tools import bell as tools_bell      # 只在用的时候 import
+        from tools import bell as tools_bell      # core 已经带进来了,这里只是取名字
         return tools_bell.cmd_layout()
 
     core._dpi_aware()

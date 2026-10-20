@@ -1,8 +1,7 @@
 """降妖伏魔:一个完全独立的功能。
 
-自己一条线程、自己的区域和状态。和科举没有来往 —— 不 import 它、不碰它的
-任何东西。跟 core 只有一条单行道:调用时现取截图 / OCR / 窗口枚举这些基础
-设施(这是唯一被允许的共享)。日志用 [铃铛],跟产品其他地方一致。
+自己一条线程、自己的区域和状态。跟 core 只有一条单行道:调用时现取截图 /
+OCR / 窗口枚举这些基础设施(这是唯一被允许的共享)。日志用 [铃铛]。
 """
 import json
 import os
@@ -13,9 +12,7 @@ import time
 
 TAG = "铃铛"
 CYCLE_LOG_MARK = "对话框开新周期"    # 文件里的周期分界日志(**只进文件**,用户定的
-# 2026-10-17:界面上不再刷它)。小窗日志区那套"交替换底色"改成认下面这条 ——
-# "报出目标、而且来源是对话框"就是新周期开始(它跟这条分界日志同一刻写出)。
-CYCLE_UI_MARK = "[来自对话框]"
+# 2026-10-17:界面上不再刷它)。它跟"报出目标[来自对话框]"那条同一刻写出。
 
 # 数据目录的根:跟 core.BASE_DIR 同一套规则(打包后跟着可执行文件走)。
 # 这里不能在模块级 import core —— core 要在模块级 import 本文件,反过来在
@@ -325,12 +322,22 @@ TRK_MISS_MAX = 8
 # 一闪而过的藏面板不会再误作废;代价是真被拖走时晚 2 拍(0.5~1 秒)才发现。
 TRK_NOHDR_MAX = 4
 LOG_GAP = 10.0                           # 同一类过程日志没变化时最多这么久写一条
-BELL_MIN_INTERVAL = 0.15                 # 铃铛自己的扫描下限(比科举快一档)
+BELL_MIN_INTERVAL = 0.15                 # 铃铛自己的扫描下限(比 core 那档 0.4s 快)
 OCR_LIMIT = 480                          # 只扫小块时的 det 输入下限(默认 736 太贵)
 # 新坐标"换参数复读"用的 det 下限(用户定的 2026-10-16):半透明面板 + 压缩让检测
 # 本身不稳,同一行换个参数就能差字(实测 `宝象 40，12）` 少了"1"和"国")。同一块裁剪
 # 用这个下限再读一次,两次 (图名,x,y) 一样才采信(见 `BellTool._recheck`)。
 TRK_RECHECK_LIMIT = 320
+# 对话框那一条文字带的 det 档(2026-10-21 量的):那块字本来就大(16 / 18 / 20 /
+# 24 / 28px 都试过,各档全都读对),而 `min 480` 会把它从 692x178 **放大**到
+# 1866x480 再跑 det。同一块交替量 20~30 次:`480/min` 124~180ms,按原像素
+# 51~115ms —— 从不更慢,GPU 闲的时候快一倍多。`max` 只在长边超过 `DLG_LIMIT_SIDE`
+# 时才缩;900 比最宽的对话框带(893)还大,所以就是"不缩也不放"。
+DLG_LIMIT_TYPE = "max"
+DLG_LIMIT_SIDE = 900
+# 对话框"两遍一致"的第二遍(见 `_scan` 里 `again` 那段)照旧走 `OCR_LIMIT=480`
+# 的放大档 —— 和第一遍的"按原像素"正好是两个参数,读出来一样才采信。实测
+# 320/min 比 480/min 还慢十几毫秒,所以复读不另设档位。
 
 
 def client_name(title):
@@ -491,11 +498,6 @@ def panel_box(rgb):
     return box
 
 
-def has_panel(rgb):
-    """这块画面里有没有对话框那种深色面板。"""
-    return panel_box(rgb) is not None
-
-
 def trk_plan(text):
     """这段文字说的任务,任务栏要不要盯、为什么盯(用户定的规矩)。
 
@@ -553,7 +555,7 @@ def has_bell_words(text):
     return any(w in t for w in BELL_WORDS)
 
 
-# 界面日志里要显示"这是哪种怪" —— 文案里认得出的写法 -> 显示名。招魂帖是**招魂幡**
+# 日志短句里要标"这是哪种怪" —— 文案里认得出的写法 -> 显示名。招魂帖是**招魂幡**
 # 用的道具,它的对话框里就写着"招魂帖"(用户那张表就是这么对的)。
 BELL_KIND_WORDS = (("招魂帖", "招魂幡"), ("招魂幡", "招魂幡"),
                    ("逐妖蛊虫", "逐妖蛊虫"), ("蛊虫", "逐妖蛊虫"),
@@ -562,10 +564,10 @@ BELL_KIND_WORDS = (("招魂帖", "招魂幡"), ("招魂幡", "招魂幡"),
 
 
 def bell_kind(text):
-    """这段文字里点的是哪种怪(只给**界面日志**用);认不出返回 ""。
+    """这段文字里点的是哪种怪(只给日志短句用);认不出返回 ""。
 
     **只认名字,不猜**:梦魇魔的对话框里压根没有"梦魇魔"三个字(那条只在任务栏),
-    所以它这里认不出来 —— 界面就只显示"对话框 朱紫国(127,90)"。
+    所以它这里认不出来 —— 日志里就只写"对话框 朱紫国(127,90)"。
     """
     t = text or ""
     for word, name in BELL_KIND_WORDS:
@@ -575,7 +577,7 @@ def bell_kind(text):
 
 
 def ui_spot(pos):
-    """界面日志里的坐标写法:"朱紫国(127,90)"(用户给的格式,不带空格)。"""
+    """日志短句里的坐标写法:"朱紫国(127,90)"(用户给的格式,不带空格)。"""
     if not pos:
         return ""
     name, x, y = pos
@@ -1218,10 +1220,11 @@ LAYOUT_PATH = os.path.join(BASE_DIR, "data", "bell_layouts.json")
 
 
 def cmd_layout(save=True) -> int:
-    """命令行:`--bell-layout` —— 量当前客户端尺寸下**对话框那块**在哪,写进分辨率表。
+    """命令行:`python main.py --layout` —— 量当前客户端尺寸下**对话框那块**在哪,
+    写进分辨率表。
 
     对话框那块要**当下开着对话框**才量得到:先把铃铛任务的对话框调出来再跑。
-    (任务栏坐标**不进表**了:它靠扫整窗现场定位,见 `LAYOUT_PATH` 上面的说明。)
+    (任务栏框(`trk`)是用户在截图上框的,这里不量、也不改。)
     """
     out = measure_layout()
     if not out:
@@ -1234,7 +1237,8 @@ def cmd_layout(save=True) -> int:
         else:
             print("    对话框:没看到对话框面板 —— 先把一个铃铛对话框打开再跑")
         if save and row:
-            print(f"    已写入 {save_layout(size, row.get('dlg'))}")
+            key, saved = save_layout(size, row.get("dlg"))
+            print(f"    已写入 {LAYOUT_PATH} 的 {key}: dlg={saved.get('dlg')}")
     return 0
 
 
@@ -1516,7 +1520,7 @@ class BellTool(threading.Thread):
     原来另有一条"慢路:整窗扫"的通道(`reanchor` / `full_ts` / `hdr_lost` /
     两处说法不一致时的对账重扫),2026-10-16 按用户要求整套撤掉了。
 
-    过程都写进日志(界面日志框能直接看到扫了哪块、多大、几毫秒、认到了什么)。
+    过程都写进日志(bell.log 里能看到扫了哪块、多大、几毫秒、认到了什么)。
     """
 
     name = "降妖伏魔"
@@ -1536,6 +1540,7 @@ class BellTool(threading.Thread):
         self._note_seen = {}           # 过程日志节流:每类上次写的是什么、什么时候
         self._warned_size = ""         # 日志里提醒过"这个尺寸不支持"了吗
         self._bad_size = ""            # 最近一次自动定位到的不支持尺寸(界面轮询弹窗)
+        self._no_client = ""           # 扫不到客户端时说过的那句话(同样的只说一次)
         self._stat = {"rounds": 0, "ocr": 0, "skip": 0, "dlg": 0,
                       "dlg_other": 0, "dlg_gate": 0}
         self._hb = 0.0                 # 上次心跳的时间
@@ -1593,7 +1598,8 @@ class BellTool(threading.Thread):
     def interval(self):
         """扫描节奏:没单独配就用铃铛自己的下限;配了就夹到合法区间。
 
-        下限比科举(0.4s)快一档:现在一轮只是截两块小图 + 1ms 门控,快得起。
+        下限比 core 的默认轮询(0.4s)快一档:现在一轮只是截两块小图 + 1ms
+        门控,快得起。
         """
         import core
         gap = float(self.cfg("bell_interval", 0.0) or 0.0)
@@ -1608,6 +1614,9 @@ class BellTool(threading.Thread):
         优先级:用户在列表里选过的那台 > 只枚举到一台。
         枚举到多台又没选过时返回空 —— 界面会弹列表让用户按角色名选
         (见 `client_choices` / `gui.on_locate_clients`)。
+
+        返回空(扫描暂停)时**说一次原因**:多开时关掉选中的那台客户端很常见,
+        不说的话日志里只是"不再有新行",看起来像卡死。
         """
         import core
         want = str(self.cfg("bell_client") or "")
@@ -1615,12 +1624,31 @@ class BellTool(threading.Thread):
             found, _mini = core.find_client_windows()
         except Exception:
             return []
-        if len(found) == 1 or not want:
-            return ([[int(v) for v in found[0][1]]] if len(found) == 1 else [])
+        if len(found) == 1:
+            self._no_client_note("")
+            return [[int(v) for v in found[0][1]]]
+        if not found:
+            self._no_client_note("没枚举到客户端窗口(游戏没开或最小化了?) —— 扫描暂停")
+            return []
+        if not want:
+            self._no_client_note("枚举到多台客户端但还没选 —— 点「自动定位」选一台")
+            return []
         for title, box in found:
             if title == want or client_name(title) == want:
+                self._no_client_note("")
                 return [[int(v) for v in box]]
+        self._no_client_note(
+            f"选定的客户端「{client_name(want) or want}」不在枚举结果里 —— "
+            "扫描暂停,点「自动定位」重新选一台")
         return []
+
+    def _no_client_note(self, msg):
+        """扫不到客户端时只说一次(每个 tick 都打就是刷屏)。"""
+        if getattr(self, "_no_client", None) == msg:
+            return
+        self._no_client = msg
+        if msg:
+            self.app.log(f"[{TAG}]{msg}", ui=False)
 
     def layout(self, region):
         """这个客户端尺寸量过的**对话框框**(相对窗口左上角);不支持返回 None。
@@ -1685,7 +1713,7 @@ class BellTool(threading.Thread):
     def _log_fail(self, what, key, err):
         """同一处的同类失败只记一条(恢复了再记下一条),别每轮刷屏。
 
-        科举那边截图/识别失败本来就记日志;这里以前是全 continue,
+        截图/识别失败本来就该记日志;这里以前是全 continue,
         出了事日志里一个字都没有,没法查。
         """
         if self._fail.get((what, key)) == str(err):
@@ -1708,14 +1736,11 @@ class BellTool(threading.Thread):
     def _note(self, kind, text, now, base="", ui_text="", ui=True):
         """过程日志节流:内容变了就写,没变最多 LOG_GAP 秒写一条。
 
-        不节流的话快路一轮一行,一分钟几百行 —— 界面那个 8 行的日志框直接废掉,
-        keju.log 一小时能到十几兆。心跳那行不受影响,它自带 10 秒间隔。
+        不节流的话快路一轮一行,一分钟几百行 —— bell.log 一小时能到十几兆。
+        心跳那行不受影响,它自带 10 秒间隔。
 
-        `ui_text` 是**界面上显示的那一份**(用户定的 2026-10-17):界面只要
-        "任务栏 巧智魔 未发现坐标" 这种一眼能扫的短句,块数/耗时/读到啥/框多宽这些
-        细节全留在文件里(文件里那条 msg 一个字没变)。给了 ui_text 就不带 `base`。
-        `ui=False` = 这条**只进文件**(对话框那条读数就是:报了目标之后界面已经有
-        一模一样的"对话框 巧智魔 朱紫国(59,52)",再刷一条就是重复 —— 用户定的)。
+        `ui` / `ui_text` 是历史参数(原本喂小窗的日志区,2026-10-21 日志区撤掉):
+        调用点照旧传,`App.log` 收下但不另作他用,所有行都只进 bell.log。
         """
         last = self._note_seen.get(kind)
         if last and last[0] == text and now - last[1] < LOG_GAP:
@@ -1724,15 +1749,19 @@ class BellTool(threading.Thread):
         self.app.log(f"[{TAG}]{base}{text}", ui=ui,
                      ui_text=(f"[{TAG}]{ui_text}" if ui_text else None))
 
-    def _read(self, ocr, crop, what, limit=OCR_LIMIT):
+    def _read(self, ocr, crop, what, limit=OCR_LIMIT, limit_type=None):
         """OCR 一块,返回 (文字块, 毫秒);失败返回 (None, 毫秒)。
 
         默认按 OCR_LIMIT 调小 det 的放大下限 —— 整窗那种大图本来就不会被放大,
-        传了也一样;小区域能省一大半时间。
+        传了也一样;小区域能省一大半时间。字本来就大的那块(对话框条带)传
+        `limit_type="max"` + 足够大的 `limit`,就是"按原像素跑",更快。
         """
         t0 = time.time()
         try:
-            if limit:
+            if limit_type:
+                blocks = ocr.recognize_blocks(crop, limit_side=limit,
+                                              limit_type=limit_type)
+            elif limit:
                 blocks = ocr.recognize_blocks(crop, limit_side=limit)
             else:
                 blocks = ocr.recognize_blocks(crop)
@@ -1828,14 +1857,16 @@ class BellTool(threading.Thread):
                 # 先在框里按像素收紧到实际面板 —— 窄一点的对话框(纯文字那种)
                 # 就不会把左边那片游戏世界一起读进来;收不出来(暗场景糊成一片)
                 # 就整块当面板用,宁可多读也不漏字。
-                tight = panel_box(crop)
-                _pf = panel_frac(crop)          # 同一拍只算一次
                 # **滞回**:已经在"有面板"状态时用低 0.05 的线,别让暗比在阈值边上
                 # 抖一下就把面板判没了(2026-10-17 实测:第二遍重扫撞上 0.59 vs 0.60,
                 # 新坐标就这么丢了)。
+                _pf = panel_frac(crop)          # 同一拍只算一次
                 _thr = (DIALOG_DARK_FRAC - 0.05 if st.get("dlg_on")
                         else DIALOG_DARK_FRAC)
-                if tight and _pf >= _thr:
+                # 暗比先算、过了门槛才去找面板框(panel_box 是门控里最贵的一步);
+                # 没面板的轮次(绝大多数)整步省掉,一拍少 4~5ms
+                tight = panel_box(crop) if _pf >= _thr else None
+                if tight:
                     box = tight
                 elif _pf >= _thr:
                     box = (0, 0, crop.shape[1], crop.shape[0])
@@ -1848,7 +1879,7 @@ class BellTool(threading.Thread):
                 st["dlg_on"] = on
                 # **只进文件,不进界面**(用户定的 2026-10-17):面板出现/消失是
                 # 环境噪音(录像里、切场景时来回跳),界面上刷它没意义;
-                # 查问题时 `keju.log` 里照样有。
+                # 查问题时 `bell.log` 里照样有。
                 self.app.log(f"[{TAG}]对话框面板"
                              f"{'出现' if on else '消失'}"
                              f"(暗比 {panel_frac(crop):.2f})", ui=False)
@@ -1878,7 +1909,14 @@ class BellTool(threading.Thread):
                     # 也不带上方的任务栏(它那两行也会带坐标,混进来会被当成
                     # "对话框说的"),更不带面板下半截那片空白
                     part = panel_text_cut(crop, box)
-                    blocks, ms = self._read(ocr, part, "对话框")
+                    # 第一遍:按原像素跑(字大,放大只白烧 det);第二遍(`again`)
+                    # 换回 480 的放大档 —— 复读要的是"换个参数还读出同一个值"。
+                    if again:
+                        blocks, ms = self._read(ocr, part, "对话框")
+                    else:
+                        blocks, ms = self._read(ocr, part, "对话框",
+                                                limit=DLG_LIMIT_SIDE,
+                                                limit_type=DLG_LIMIT_TYPE)
                     st["dlg_ts"] = now
                     if blocks is not None:
                         st["dlg_seen"] = True
@@ -2122,7 +2160,7 @@ class BellTool(threading.Thread):
                 # **鼠标和任务栏框对不上时,把两边坐标写进文件**(用户 2026-10-17 报
                 # "鼠标移到任务栏还是没有快扫"时加的诊断):只看"跳过"数分不清是
                 # "鼠标真不在附近"还是"框学歪了/窗口尺寸变了" —— 有这两组坐标一眼就知道。
-                # 5 秒最多一条(鼠标一直在动,不节流会刷屏),只进 keju.log。
+                # 5 秒最多一条(鼠标一直在动,不节流会刷屏),只进 bell.log。
                 if cur and now - st.get("hover_warn_ts", 0.0) >= 5.0:
                     st["hover_warn_ts"] = now
                     self.app.log(
@@ -2188,10 +2226,14 @@ class BellTool(threading.Thread):
                         # 那一类,只取 track 会把它整个丢掉。
                         # 鼠标停在任务栏上时**不做标题圈范围**:悬停行在标题上面,
                         # 而且标题常被读花("降双快通"/"降欢风衡"),一 scoped 就全丢。
+                        # **只有 hover 档**需要松开范围:悬停行不属于「降妖伏魔」标题
+                        # 下面那一段。item(逐妖蛊虫)档的坐标就写在任务栏里,照旧
+                        # 圈范围 —— 否则鼠标一靠近任务栏,同面板别的任务的行也会被
+                        # 当成这一轮的新坐标。
                         # 读的是整窗那一拍就传 `wide=True`:大字面里混着聊天/别的
                         # 任务的行,两条"光秃秃的图名+坐标"兜底一律不用(见
                         # `scan_bell_parts` 的 docstring)。
-                        scoped = not near
+                        scoped = not (mode == "hover" and near)
                         d3, t3, _w = scan_bell_parts(
                             blocks, scoped=scoped, wide=not rect_known)
                         # 取 d3 or t3 是**必须**的:任务栏那行"去X(x,y)使用逐妖蛊虫"
@@ -2215,7 +2257,7 @@ class BellTool(threading.Thread):
                         # 看看它到底供过几次值、每次是哪条文法命中的。被 wide
                         # 规则挡下的那些单独记一笔(同一套文法顺序判"本该哪条命中"),
                         # 好用真机日志量"收紧得够不够、会不会漏"。
-                        # 都只进 keju.log(ui=False),不刷小窗那个日志框。
+                        # 都只进 bell.log(ui=False),界面上没有日志区。
                         if got and not rect_known:
                             self.app.log(
                                 f"[{TAG}]大字面供值: {_spot(got)}"
@@ -2529,8 +2571,8 @@ class BellTool(threading.Thread):
                         + ("有框" if s2.get("trk") else "还没学到")
                         + f"/节奏{s2.get('trk_gap', TRK_GAP):.2f}s"
                         + ("/有坐标" if s2.get("trk_text") else ""))
-        # **只进文件,不进界面**(用户定的 2026-10-17):心跳是"这 10 秒扫了几轮 /
-        # 白烧了几次"的体检数字,界面上刷它只是噪音;要看就去 keju.log 里 grep
+        # **只进文件**(用户定的 2026-10-17):心跳是"这 10 秒扫了几轮 /
+        # 白烧了几次"的体检数字;要看就去 bell.log 里 grep
         # 「扫描心跳」(它自带那段时间的轮数/OCR 数/跳过数/样本)。
         self.app.log(f"[{TAG}]扫描心跳: " + " ".join(bits), ui=False)
         s["rounds"] = s["ocr"] = s["skip"] = s["dlg"] = 0

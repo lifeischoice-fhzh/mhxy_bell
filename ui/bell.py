@@ -21,7 +21,7 @@ def set_coord(app, text):
     """重画坐标那行(**圆角牌 + 白字黑边**,见 `ui_widgets.bell_coord`)。
 
     纯控件更新:不动任何扫描状态。图片挂在 app 上留引用(Tk 图没人持有会被回收)。
-    调用点:`build_bell`(建控件时)和 `gui._refresh`(`bell_var.set` 之后各一次)。
+    调用点:`build_bell`(建控件时)和 `gui._drain_logs`(`bell_var.set` 之后各一次)。
     """
     lbl = getattr(app, "bell_coord", None)
     if lbl is None or not lbl.winfo_exists():

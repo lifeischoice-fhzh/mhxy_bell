@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """回归测试:python tests.py
 
-只覆盖降妖伏魔两组(从原 keju-answerer 项目的 tests.py 原样移植):
-  bell      纯函数 + 工具线程(提示文法/类型判定/底图标定/调度/独立开关)
-  bell_ui   小窗(建控件/抽屉/日志区/关窗回主页),Tk 真建、引擎和 OCR 是假的
+只覆盖降妖伏魔两组(从原 keju-answerer 项目的 tests.py 移植):
+  bell      纯函数 + 工具线程(提示文法/类型判定/底图标定/调度/独立监听)
+  bell_ui   小窗(建控件/抽屉/定位),Tk 真建、引擎和 OCR 是假的
 
 原则:不联网、不发出声音、不碰真实配置/日志/地图数据(全部指向临时目录),
 图片用合成图;需要 GPU 时会自动回退 CPU,不影响结果。
@@ -231,10 +231,14 @@ def mk_engine(bank, blocks, cfg=None, crops=None):
 
 @section
 def sec_bell():
-    """降妖伏魔:任务提示里的地图+坐标、语音报点、底图与坐标标定。
+    """降妖伏魔:任务提示里的地图+坐标、妖魔定位、底图与坐标标定。
 
-    这组跟科举答题无关,单独用 `python tests.py --bell` 跑很快。
+    这组不碰科举相关的东西,单跑这一组是整份回归里最快的一段。
     """
+    # 这组中途会把这两个全局函数换成桩(整组都靠它们),收尾要还原:
+    # 免得后面的组继承这套假环境,用例顺序变成隐式依赖。
+    _orig_cursor = tools_bell.cursor_pos
+    _orig_find = core.find_client_windows
     bank = types.SimpleNamespace()   # 铃铛用例不碰题库:占位对象(保 mk_engine 形状)
     BELL_TEXT = ("我们要对付一只新的狡魔了，它是一只胆小而怯弱的法系妖，"
                  "不过却是身形矫健，敏捷快速。估计，要被他个好几次了。"
@@ -719,7 +723,7 @@ def sec_bell():
           f"spot={tool_f.ui_state()['spot']} | "
           + " | ".join(app_f.logs[-2:]))
     # 第一轮这一拍读的就是**整窗**(还没学到框):大字面供值的统计行该在这儿留下
-    # —— **临时**(量完可以删),只进 keju.log(ui=False),小窗那个日志框不刷。
+    # —— **临时**(量完可以删),只进 bell.log(ui=False),界面上不刷。
     wide = [m for m in app_f.logs if "大字面供值" in m]
     check("大字面供值:整窗那一拍供出的值在日志里留一行(带命中的文法)",
           len(wide) >= 1
@@ -727,7 +731,7 @@ def sec_bell():
                   and "机制=?" not in m for m in wide),
           " | ".join(wide) or "日志里没有大字面供值那行")
 
-    # 整窗那一拍把"光秃秃的图名+坐标"挡下来时,keju.log 里也要留一条可统计的行
+    # 整窗那一拍把"光秃秃的图名+坐标"挡下来时,bell.log 里也要留一条可统计的行
     # (用户拿它量一轮:挡下几次、本该是哪条文法命中的)。这里往整窗那块塞一句
     # 聊天性质的坐标 —— wide 那一拍照旧什么都不认,但宽口径下它本该是
     # 「任务栏·无锚点兜底」,所以那一行会出现;而且**不许**报出去。
@@ -844,12 +848,6 @@ def sec_bell():
     #  用例。2026-10-16 按用户要求**整套删掉**:现在不需要两处对上了 —— `_scan`
     #  末尾那段对账 + `st["mismatch"]` + 那两句日志都不在了,整窗也只剩快路里
     #  "定位/重锚任务栏框"这一处用途。)
-    check("识别过程进界面日志:[铃铛] 开头的行才有这个归属",
-          core.log_scope("[铃铛]识别 对话框条带 800x300 块3 120ms → 宝象国(9,9)")
-          == "bell"
-          and all(core.log_scope(m) == "bell"
-                  for m in app_f.logs if "识别" in m),
-          str([m for m in app_f.logs if "识别" in m][:2]))
 
     # 对话框"改口"要有证据(用户定的规矩):同一块面板两次读出不一样的值时,后面
     # 那个不许直接覆盖 —— 先不报、立刻重扫;重扫回来还是它才算纠正。
@@ -1304,9 +1302,10 @@ def sec_bell():
 
     # 纯函数:门控判据与"学到的那块框"
     check("门控:暗且不彩的比例分得出「对话框面板在不在」",
-          tools_bell.has_panel(win.image()[band[1]:band[3], band[0]:band[2]])
-          and not tools_bell.has_panel(
-              np.full((300, 800, 3), BG_C, np.uint8))
+          tools_bell.panel_box(win.image()[band[1]:band[3], band[0]:band[2]])
+          is not None
+          and tools_bell.panel_box(
+              np.full((300, 800, 3), BG_C, np.uint8)) is None
           and tools_bell.panel_frac(np.full((10, 10, 3), 32, np.uint8)) == 1.0
           and tools_bell.panel_frac(np.full((10, 10, 3), BG_C, np.uint8)) == 0.0)
     check("防误读:同一个值要见过两次才算数(治任务栏把一只怪读成好几种)",
@@ -1366,8 +1365,17 @@ def sec_bell():
           and tools_bell.read_note("任务栏", (330, 180), 3, 99.6,
                                    ("宝象国", 99, 54))
           == "任务栏 330x180 块3 100ms → 宝象国(99,54)")
+    _thr = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    _thr._note_seen = {}
+    _thr_notes = []
+    _thr.app = types.SimpleNamespace(
+        log=lambda m, **kw: _thr_notes.append(m))
+    _thr._note("读数", "同一句", 100.0)
+    _thr._note("读数", "同一句", 101.0)              # 没变化、还没到点:不写
+    _thr._note("读数", "同一句", 100.0 + tools_bell.LOG_GAP + 1)   # 兜底重写
+    _thr._note("读数", "换了一句", 100.5)            # 变了:当场写
     check("过程日志:同一类没变化时按 LOG_GAP 节流(不然一轮一行把日志刷爆)",
-          tools_bell.LOG_GAP >= 5)
+          len(_thr_notes) == 3, str(_thr_notes))
     # 分辨率表:客户端每个尺寸下那两块在哪(相对窗口左上角)——
     # 窗口挪了/改大小都不用重设,多开时每个窗口吃同一张表
     check("分辨率表:坐标是相对窗口的,换算成屏幕坐标时 x/y 各用各的偏移",
@@ -1380,7 +1388,11 @@ def sec_bell():
           and tools_bell.layout_for((815, 679)) is not None
           and tools_bell.layout_for((815, 680)) is not None
           and tools_bell.layout_for((816, 682)) is not None
-          and tools_bell.layout_for((900, 640)) is None)
+          and tools_bell.layout_for((900, 640)) is None
+          and tools_bell.layout_for((815, 680 - tools_bell.LAYOUT_TOL))
+          is not None
+          and tools_bell.layout_for((815, 680 - tools_bell.LAYOUT_TOL - 1))
+          is None)
     check("分辨率表:支持的两档尺寸量到的对话框框(相对窗口左上角)",
           tools_bell.layout_for((815, 680)) == [69, 355, 763, 582]
           and tools_bell.layout_for((1011, 826)) == [168, 430, 860, 657]
@@ -1391,7 +1403,7 @@ def sec_bell():
     with patch(mods=(tools_bell,), LAYOUT_PATH=_lay):
         tools_bell.save_layout((1022, 809), dlg=[10, 20, 900, 300])
         tools_bell.save_layout("815x679", dlg=[5, 6, 800, 400])
-        check("分辨率表:按客户端尺寸存取(相对窗口左上角;表里只有对话框)",
+        check("分辨率表:按客户端尺寸存取 dlg(相对窗口左上角)",
               tools_bell.layout_for((1022, 809)) == [10, 20, 900, 300]
               and tools_bell.layout_for((815, 679)) == [5, 6, 800, 400]
               and tools_bell.layout_for((999, 999)) is None)
@@ -1438,7 +1450,7 @@ def sec_bell():
           tools_bell.trk_plan("去建邺城找巧智魔。剩余时间1小时59分。") == "hover"
           and tools_bell.trk_plan("去西梁女国找怯弱妖。剩余时间2小时。")
           == "hover")
-    # **真机实录**(2026-10-16 上午 keju.log):这两类的对话框**确实点出怪名** ——
+    # **真机实录**(2026-10-16 上午 bell.log):这两类的对话框**确实点出怪名** ——
     # 之前担心"对话框和梦魇魔同形、认不出怪名,hover 那条第二坐标拿不到",
     # 真机原文就是上面这个样子,照规则判就行,不用为它们单开口子。
     check("任务类型:真机实录的怯弱妖/巧智魔对话框(怪名在对话框里) -> hover",
@@ -1656,6 +1668,31 @@ def sec_bell():
         _wt.tick(force=False)
         check("任务栏读花:单发一次不许覆盖(哪怕鼠标压在任务栏上、读成悬停那行的样子)",
               _wt.spot == ("宝象国", 150, 54), str(_wt.spot))
+
+        # item 档的坐标就写在任务栏里,不靠悬停 —— 鼠标正好压在任务栏附近时
+        # **也不许**松开「只认降妖伏魔标题下那段」的范围(否则同面板别的任务的行
+        # 会被当成这一轮的新坐标)。这里往任务栏里塞一条**标题圈外**的别的任务、
+        # 带图名+坐标,鼠标钉在任务栏上:目标必须还是对话框那条。
+        _sc = {"dlg": "去宝象国(24,51)使用逐妖蛊虫,然后妖魔就会出现。",
+               "trk": "去宝象国找逐妖蛊虫,然后跟着地上的蛊虫找到妖魔。"}
+
+        def _ocr_sc(img, **kw):
+            if _Shot.last != _dband2 and _Shot.last != _reg2:
+                return [HDR, TITLE, blk(_sc["trk"], 700, 225),
+                        blk("去朱紫国(88,66)寻找某某", 700, 430)]
+            return [blk(_sc["dlg"], 60, 30)]
+
+        with patch(mods=(tools_bell,), cursor_pos=lambda: (700, 300)):
+            _sct = _bell_tool({}, _ocr_sc)
+            _sct_logs = []
+            _sct.app.log = lambda m, **kw: _sct_logs.append(m)
+            for _ in range(3):
+                _sct._ts = 0.0
+                _sct._slot[1]["trk_ts"] = 0.0
+                _sct.tick(force=False)
+        check("范围:item 档鼠标靠近任务栏也不松开标题圈范围(别的任务的坐标不许进来)",
+              _sct.spot == ("宝象国", 24, 51),
+              f"{_sct.spot} | " + " | ".join(_sct_logs[-6:]))
 
         # 巧智魔/怯弱妖:悬停那行**就是**鼠标压上去才出来的,单次读数就该认。
         # **类型只由对话框给**(2026-10-16),所以这里对话框那行得点出"巧智魔"来 ——
@@ -2120,6 +2157,28 @@ def sec_bell():
               and "先不更新" in _lg2[0],
               f"{_c2} -> {_s2} limits={_lim2} {_lg2}")
 
+        # ---- 对话框那条文字带的 det 档(2026-10-21) ----
+        # 那块字大,第一遍按**原像素**跑(max 900);复读那一拍照旧走 480 的放大档
+        # —— 第一遍 max、第二遍 min,两遍不同参数、读出来一样才采信。
+        _dlg_lim = []
+
+        def _ocr_dl(img, **kw):
+            if _Shot.last == _dband2:                    # 对话框的文字带
+                _dlg_lim.append((kw.get("limit_side"), kw.get("limit_type")))
+                return [blk("去宝象国(150,54)使用逐妖蛊虫,然后妖魔就会出现。",
+                            60, 30)]
+            return [HDR, blk("去宝象国(150,54)使用逐妖蛊虫,然后妖魔就会出现。",
+                             60, 30)]
+
+        _dl = _bell_tool({}, _ocr_dl)
+        _dl._ts = 0.0
+        _dl.tick(force=False)
+        check("对话框 det 档:第一遍按原像素(max 900),复读换 480 放大档",
+              _dlg_lim[:2] == [(tools_bell.DLG_LIMIT_SIDE, tools_bell.DLG_LIMIT_TYPE),
+                               (tools_bell.OCR_LIMIT, None)]
+              and _dl.spot == ("宝象国", 150, 54),
+              f"{_dlg_lim} spot={_dl.spot}")
+
         check("过程日志:任务栏那一行带临时统计(裁剪宽 + 左右贴边,量完可删)",
               tools_bell.edge_note([0, 0, 300, 200], [0, 0, 1000, 880])
               == " [宽300/左贴边]"
@@ -2314,6 +2373,23 @@ def sec_bell():
               f"{_ct2._slot[1].get('trk_mode')} "
               f"节奏{_ct2._slot[1].get('trk_gap')}")
 
+    # 真机截图夹具(docs/shots):`check_shots.py` 和 `expected.json` 靠**文件名**
+    # 对号。这里只查"文件都在 + 表里的图名/坐标合法",**不跑 OCR** —— 回归里不建
+    # 真引擎(那条红线见 AGENTS.md);真识别由 `python check_shots.py` 单独跑。
+    _shots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "docs", "shots")
+    with open(os.path.join(_shots_dir, "expected.json"), encoding="utf-8") as _f:
+        _shot_rows = json.load(_f)["shots"]
+    _shot_bad = [
+        s["file"] for s in _shot_rows
+        if not os.path.exists(os.path.join(_shots_dir, s["file"]))
+        or s.get("map") not in tools_bell.BELL_MAP_NAMES
+        or not tools_bell.in_bounds(s.get("map"), s.get("x", -1),
+                                    s.get("y", -1))]
+    check("真机截图夹具:expected.json 里的文件都在、图名/坐标都合法",
+          bool(_shot_rows) and not _shot_bad,
+          f"{len(_shot_rows)} 张,坏 {_shot_bad}")
+
     check("只认一台:多开时界面靠角色名让用户选(标题里抠得出来)",
           tools_bell.client_name(
               "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])") == "祭花′"
@@ -2353,7 +2429,7 @@ def sec_bell():
          ("傲来国", 30, 53)),
         ("巧智魔·任务栏(只有图)",
          "去建邺城找巧智魔。剩余时间1小时59分。", None),
-        ("巧智魔·对话框(真机 keju.log)",
+        ("巧智魔·对话框(真机 bell.log)",
          "又一个！这次是一只精巧的巧智魔。它足智多谋而且狡猾无比。"
          "我发现它的踪迹在朱紫国(7,32)，少侠们准备好了就过去看看吧。",
          ("朱紫国", 7, 32)),
@@ -2441,9 +2517,12 @@ def sec_bell():
           f"{app_b.said} {eng_b.bell_tool.target}")
     check("铃铛:引擎上留了结构化的妖魔位置(界面画红点用)",
           eng_b.bell_tool.spot == ("朱紫国", 88, 94), str(eng_b.bell_tool.spot))
+    _pos0 = len([m for m, _ in app_b.logs_all if "妖魔位置" in m])
     eng_b._safe("cycle", True)
     check("铃铛:同一只妖魔不重复记(坐标没变就不再报一轮)",
-          app_b.said == [], str(app_b.said))
+          app_b.said == []
+          and len([m for m, _ in app_b.logs_all if "妖魔位置" in m]) == _pos0,
+          str([m for m, _ in app_b.logs_all if "妖魔位置" in m]))
     eng_b.ocr.recognize_blocks = lambda img, **kw: [
         blk("我发现它的踪迹在西凉女国(12,34)，少侠", 100, 200)]
     eng_b._safe("cycle", True)
@@ -2547,11 +2626,38 @@ def sec_bell():
         cfg={"app": {"active_tool": "bell"}})
     eng_o._safe("cycle", True)
     check("调度:进了降妖伏魔,科举的题目一个字都不播",
-          app_o.said == [], str(app_o.said))
+          app_o.said == [] and eng_o.bell_tool.target == ""
+          and eng_o.bell_tool.spot is None,
+          f"{app_o.said} {eng_o.bell_tool.target!r}")
 
     check("调度:进入标记有缺省值(监听常开,没有开关键)",
           core.DEFAULT_CONFIG["active_tool"] == ""
           and "bell_on" not in core.DEFAULT_CONFIG)
+
+    # 扫哪:多开时按角色名挑;挑中的那台关了 -> 扫描暂停,但要**说一次**原因
+    # (不然日志里只是"不再有新行",看起来像卡死)。
+    _reg_logs = []
+    _reg = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    _reg.app = types.SimpleNamespace(log=lambda m, **kw: _reg_logs.append(m))
+    _reg.cfg = lambda k, d=None: {"bell_client": "祭花′"}.get(k, d)
+    _wins = {"v": ([("A - 烛龙′[1]", [0, 0, 800, 600]),
+                    ("B - 祭花′[2]", [900, 0, 1700, 600])], [])}
+    with patch(find_client_windows=lambda: _wins["v"]):
+        check("扫哪:多开时按角色名挑那一台",
+              _reg.regions() == [[900, 0, 1700, 600]] and _reg_logs == [],
+              f"{_reg.regions()} {_reg_logs}")
+        _wins["v"] = ([("A - 烛龙′[1]", [0, 0, 800, 600]),
+                       ("C - 别个[3]", [900, 0, 1700, 600])], [])
+        _reg.regions()
+        _reg.regions()                        # 同样的原因只说一次
+        check("扫哪:选中的客户端不在了 -> 返回空 + 日志说一次原因",
+              _reg.regions() == [] and len(_reg_logs) == 1
+              and "祭花′" in _reg_logs[0], str(_reg_logs))
+        _wins["v"] = ([], [])
+        _reg.regions()
+        check("扫哪:一个客户端都没枚举到 -> 也留一条原因(不刷屏)",
+              len(_reg_logs) == 2 and "没枚举到客户端" in _reg_logs[1],
+              str(_reg_logs))
 
     # 采集底图:先按坐标范围标定,没有范围才点角色位置
     with tempfile.TemporaryDirectory(prefix="keju_map_") as d:
@@ -2618,8 +2724,12 @@ def sec_bell():
                   abs(tools_bell.map_ratio("宝象国") - 159 / 120.0) < 1e-9
                   and tools_bell.map_ratio("没有这张图") is None)
 
+    # 收尾:把这组开头换掉的全局桩还原(见函数开头的说明)。
+    tools_bell.cursor_pos = _orig_cursor
+    core.find_client_windows = _orig_find
 
-# ---------------------------------------- 5.5 降妖伏魔的窗口层(小窗/抽屉/日志)
+
+# ---------------------------------------- 5.5 降妖伏魔的窗口层(小窗/抽屉)
 
 
 class BellEngine:
@@ -2671,7 +2781,7 @@ def _bell_app():
 
     def log(msg, ui=True, detail="", **kw):
         app.logs.append(msg)
-        gui.App.log(app, msg, ui, detail)  # 仍写进沙箱的 keju.log
+        gui.App.log(app, msg, ui, detail)  # 仍写进沙箱的 bell.log
     app.log = log
     return app
 
@@ -2682,7 +2792,7 @@ def sec_bell_ui():
     """小窗:版面(面板头 + 一颗「自动定位」+ 保留的抽屉)/ 定位 / 采集逻辑。
 
     调的是 gui.App 上的真方法,但 App 本身是 `__new__` 出来的空壳:Tk 真建、
-    引擎和 OCR 是假的。所以这一组几秒跑完,`--bell` 带上它,改铃铛不用跑整个回归。
+    引擎和 OCR 是假的。所以这一组几秒跑完,改小窗先跑这一组就够。
     """
     def _txt(w):
         try:

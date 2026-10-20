@@ -28,7 +28,8 @@ EXE = DIST / f"{APP_NAME}.exe"
 # 运行时产物(每台机器/每次使用都不一样,打包不能丢)
 KEEP_FILES = ("config.json",)
 KEEP_GLOBS = ("bell.log*",)
-# 用户自己录的地图底图和配套标定(底图不在仓库里,打包丢了就得重录)
+# 运行时目录里的地图底图(内置的六张 + 以后可能重新采的)和配套标定:
+# 打包会整个重建 dist,先抄出来、打完再放回去(calib 是自动算的,丢了会重算)。
 MAP_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 KEEP_MAPS = ("calib.json",)
 
@@ -39,6 +40,7 @@ REQUIRED = (
     "_internal/data/bell_layouts.json",
     "_internal/data/maps/bounds.json",
     "_internal/data/maps/calib.json",
+    "_internal/data/maps/宝象国.png",      # 六张底图随仓库分发:少一张就是 datas 漏了
 )
 
 
