@@ -426,7 +426,7 @@ def _icon_images(glyph, palette):
         for k in (0, 16, -20)]
 
 
-_BTN_SPECS = (                # (样式名, 元素标签, 底色, 描边, 字色, 高光, 内边距)
+_BTN_SPECS = (                # (样式名, 元素标签, 底色, 描边, 字色, 高光, 内边距, 图元 border)
     ("Bell.TButton", "Btn", "btn", "btn_line", "txt", (255, 255, 255, 26),
      (16, 0), 14),
     ("BellGold.TButton", "Gold", "gold", "gold_line", "gold_txt",

@@ -107,6 +107,17 @@ class App:
     def _set(self, key, val):
         self.cfg.setdefault(self._section(key), {})[key] = val
 
+    def _save_cfg(self):
+        """落盘配置;文件被占用(save_config 重试 4 次后 raise)也不让调用方炸掉。
+
+        启动路径(_enter_bell 等)没有 try 兜着,打包版连 stderr 都没有 ——
+        在这儿兜一层,失败记日志就够了,配置晚点再存总比整个应用起不来强。
+        """
+        try:
+            core.save_config(self.cfg)
+        except Exception as e:
+            self.log(f"[配置]保存失败(文件被占用?): {e}")
+
     def __init__(self):
         import tkinter as tk
 
@@ -163,7 +174,7 @@ class App:
         """
         self._set("active_tool", "bell")
         self.engine.refresh_tools()
-        core.save_config(self.cfg)
+        self._save_cfg()
 
     def _enter_bell_slow(self):
         """窗口已经在弹了,再做慢活:清状态、定位客户端、按坐标范围标定。"""
@@ -186,7 +197,7 @@ class App:
         else:
             self._refresh_bell_locate(None)
             self.log("[铃铛]没找到客户端窗口:先启动游戏再进降妖伏魔")
-        core.save_config(self.cfg)
+        self._save_cfg()
         self._auto_map_calib()          # 按坐标范围补底图标定(只影响铃铛)
 
     def _bell_open(self):
@@ -235,7 +246,7 @@ class App:
         """
         mode = "a" if str(self._get("ui_mode", "a") or "a") == "b" else "b"
         self._set("ui_mode", mode)
-        core.save_config(self.cfg)
+        self._save_cfg()
         ui_bell.apply_theme(self, mode)
         self.log(f"[铃铛]界面换成{'明亮' if mode == 'b' else '深色'}模式")
 
@@ -266,7 +277,7 @@ class App:
             return False
         if len(choices) == 1:                 # 只有一台:直接认它,别打扰
             self._set("bell_client", choices[0][1])
-            core.save_config(self.cfg)        # 定位到就落盘,下次进来看得到
+            self._save_cfg()                  # 定位到就落盘,下次进来看得到
             return True
         want = str(self._get("bell_client") or "")
         if want and not force:
@@ -276,7 +287,7 @@ class App:
         if pick is None:
             return bool(want)                 # 取消了:保留原来的选择
         self._set("bell_client", choices[pick][1])
-        core.save_config(self.cfg)
+        self._save_cfg()
         self.log(f"[铃铛]选定的客户端:{choices[pick][0]}")
         return True
 
@@ -584,10 +595,7 @@ class App:
         界面冻住,原项目的老坑)。
         """
         self.save_bell_pos()              # 位置也一起存,下次摆在原地
-        try:
-            core.save_config(self.cfg)
-        except Exception:
-            pass
+        self._save_cfg()
         for w in (getattr(self, "bell_win", None),):
             if w is not None:
                 stop_anim(w)              # 没跑完的动效先停,别跟销毁撞上

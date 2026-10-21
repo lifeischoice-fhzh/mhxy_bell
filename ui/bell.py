@@ -497,7 +497,7 @@ def apply_theme(app, mode=None):
 
 
 def draw_bell(app):
-    """把当前妖魔位置画到底图上。**画框固定 400x280**,底图按比例居中(换图窗口不跳)。"""
+    """把当前妖魔位置画到底图上。**画框固定 380x300**,底图等比缩进后居中(换图窗口不跳高)。"""
     c = getattr(app, "bell_canvas", None)
     if c is None or not c.winfo_exists():
         return

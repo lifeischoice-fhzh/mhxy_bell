@@ -354,9 +354,6 @@ class Ocr:
                 self._engine = RapidOCR()
         return self._engine
 
-    def recognize(self, img_bgr) -> str:
-        return "".join(b["text"] for b in self.recognize_blocks(img_bgr))
-
     def _infer(self, img_bgr, limit_side=None, limit_type=None):
         """跑一次推理。limit_side / limit_type 临时改 det 的缩放(改完还原)。
 
