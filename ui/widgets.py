@@ -222,51 +222,46 @@ BELL_SKINS = {
     "a": {
         "bg": "#0f1116",          # 窗口底:近黑
         "card": "#0f1116",        # 单面色(抽屉/弹窗也拿它当底)
-        "paper": "#0b0d12",       # 画布底:比窗口再深一档
+        "paper": "#0f1116",       # 画布底:和窗口底同色 —— 底图比画框窄/矮时,留边
+        #                           就是窗口底色,不该出现一块"另一个颜色"的框
         "line": "#232936",        # 分隔线/细边
+        "map_edge": "#232936",    # 地图那圈 1px 描边(深色下几乎看不见)
         "btn": "#20242e",         # 按钮底
         "btn_line": "#333a4a",
         "gold": "#f0c05a",        # 金:坐标(全窗唯一强调色)
         "gold_line": "#b8933f",
         "gold_txt": "#1a1206",
         "green": "#5fd18a",       # 亮绿:强调(抽屉小标题)
-        "jade": "#57c98b",        # 草绿:肯定态高亮(BellAccent.TButton)
-        "jade_line": "#2e7d55",
         "red": "#ff6a52",         # 珊瑚红:异常提示
-        "yellow": "#f0c05a",      # 同金:数值
+        "yellow": "#f0c05a",      # 同金:数值(pick_client 选中行)
         "dot": "#ff3b30",         # 红点
         "dot_ring": "#ffffff",
         "txt": "#e9ecf2",         # 主文字
         "sub": "#7d8798",         # 次要灰
-        "stroke": "#0a0e1e",      # 字的深色描边(PIL 画字时用)
         "titlebar": "#0f1116",    # 标题栏(深色模式下强制刷成同色)
         "font": "Microsoft YaHei UI",
-        "font_big": "Microsoft YaHei UI",
         "font_num": "Consolas",   # 坐标:等宽数字
     },
     "b": {
         "bg": "#ffffff",          # 窗口底:白
         "card": "#ffffff",
-        "paper": "#f2f4f7",       # 画布底:浅灰(没图时看得出这块是画布)
+        "paper": "#ffffff",       # 画布底:同窗口底(留边融进白底,只靠 1px 描边分界)
         "line": "#e4e7ec",
+        "map_edge": "#d8dde5",    # 白底上的地图边界:比 line 再深一档才看得见
         "btn": "#f4f5f7",
         "btn_line": "#dfe3e9",
         "gold": "#111827",        # 坐标:近黑(明亮模式下不用金色)
         "gold_line": "#c7ccd4",
         "gold_txt": "#ffffff",
         "green": "#16a34a",
-        "jade": "#16a34a",
-        "jade_line": "#14803c",
         "red": "#dc2626",
         "yellow": "#111827",
         "dot": "#ef4444",
         "dot_ring": "#ffffff",
         "txt": "#141922",
         "sub": "#6b7280",
-        "stroke": "#ffffff",
         "titlebar": None,         # None = 恢复系统标题栏(白)
         "font": "Microsoft YaHei UI",
-        "font_big": "Microsoft YaHei UI",
         "font_num": "Consolas",
     },
 }
@@ -338,11 +333,11 @@ def _btn_images(fill, outline, gloss=(255, 255, 255, 95)):
             for k in (0, 16, -20)]
 
 
-def bell_image(kind, w, h):
+def bell_image(w, h):
     """给 ui/bell.py 抽屉小标题用的圆角底图(带缓存的 PhotoImage)。"""
     from PIL import ImageTk
     imgs = _bell_imgs()
-    key = (current_mode(), kind, w, h)
+    key = (current_mode(), w, h)
     got = imgs.get(key)
     if got is not None:
         return got
@@ -389,8 +384,6 @@ _BTN_SPECS = (                # (样式名, 元素标签, 底色, 描边, 字色
      (16, 0), 14),
     ("BellGold.TButton", "Gold", "gold", "gold_line", "gold_txt",
      (255, 255, 255, 110), (16, 0), 14),
-    ("BellAccent.TButton", "Accent", "jade", "jade_line", "gold_txt",
-     (255, 255, 255, 70), (16, 0), 14),
     ("BellGhost.TButton", "Ghost", "btn", "btn_line", "sub", None,
      (16, 0), 14),
 )

@@ -2690,7 +2690,24 @@ def sec_bell_ui():
                   < app.bell_theme_btn.winfo_x(),
                   f"x {_x_short}->{_x_long} 名字宽 {_w_short}->{_w_long} "
                   f"主题钮 x={app.bell_theme_btn.winfo_x()}")
-            _lbl.configure(text="")
+            # 两颗圆钮都没有文字:hover 时用底行那行字说明它在干什么
+            ui_bell.set_client(app, "祭花′")
+            app.bell_locate_btn.event_generate("<Enter>", when="now")
+            app.root.update()
+            _hover_a = _txt(app.bell_client_lbl)
+            app.bell_locate_btn.event_generate("<Leave>", when="now")
+            app.root.update()
+            app.bell_theme_btn.event_generate("<Enter>", when="now")
+            app.root.update()
+            _hover_b = _txt(app.bell_client_lbl)
+            app.bell_theme_btn.event_generate("<Leave>", when="now")
+            app.root.update()
+            check("底行:hover 圆钮 -> 显示「换客户端」/「明亮模式」,移开还原角色名",
+                  _hover_a == "换客户端" and _hover_b == "明亮模式"
+                  and _txt(app.bell_client_lbl) == "祭花′",
+                  f"{_hover_a!r}/{_hover_b!r}/"
+                  f"{_txt(app.bell_client_lbl)!r}")
+            ui_bell.set_client(app, "")
             # 字号是磅值(20pt 在 100% 下重排成 ~41px 高):头部行高必须由内容撑,
             # 写死高度会把地名/坐标上下裁掉(用户 2026-10-21 报"地图名显示不全")
             check("小窗:地名/坐标不被裁(控件高 = 请求高,行高由内容撑)",
@@ -2733,8 +2750,8 @@ def sec_bell_ui():
             with patch(find_client_windows=lambda: ([], [])):
                 app.engine.bell_tool.locate = lambda: 0
                 gui.App._enter_bell_slow(app)
-                check("进功能:没定位到 -> 底行空着(不写「自动定位」这种字)",
-                      _txt(app.bell_client_lbl) == "",
+                check("进功能:没定位到 -> 底行写占位句(不写「自动定位」这种字)",
+                      _txt(app.bell_client_lbl) == ui_bell.CLIENT_NONE,
                       _txt(app.bell_client_lbl))
             app.engine.bell_tool.locate = lambda: 0       # 还原(后面的用例靠它)
             shown_texts = _texts(app.bell_win)
@@ -2763,9 +2780,10 @@ def sec_bell_ui():
                 ui_state=lambda: {"spot": ("宝象国", 96, 44),
                                   "target": "宝象国 (96,44)"})
             app._drain_logs()              # 轮询那个方法(每 POLL_MS 调一次)
-            check("小窗:轮询里换了目标 -> 坐标那行跟着重画(不是一直停在「等待…」)",
-                  getattr(app, "bell_coord_text", "") == "宝象国 (96,44)",
-                  getattr(app, "bell_coord_text", None))
+            check("小窗:轮询里换了目标 -> 地名/坐标跟着重画(不是一直停在「等待…」)",
+                  _txt(app.bell_name) == "宝象国"
+                  and _txt(app.bell_coord) == "96, 44",
+                  f"{_txt(app.bell_name)} / {_txt(app.bell_coord)}")
 
             # ---- 地图采集:界面入口已撤(底图内置),采集逻辑保留(直接调 record_map) ----
             shot = Image.new("RGB", (500, 320), (30, 30, 40))
@@ -2896,9 +2914,23 @@ def sec_bell_ui():
                      if app.bell_canvas.type(i) == "oval"]
             check("地图:只画一个红圆点,不标坐标字(格子烘在底图里,不是画布元素)",
                   "text" not in items and "line" not in items
+                  and items.count("rectangle") == 1      # 地图那圈 1px 描边
                   and len(ovals) == 1
                   and app.bell_canvas.itemcget(ovals[0], "fill") == "#ff3b30",
                   str(items))
+            # 画框固定:换图不再改窗口高度(长寿村之前能把窗口撑到 696)
+            _img_item = [i for i in app.bell_canvas.find_all()
+                         if app.bell_canvas.type(i) == "image"][0]
+            _ix, _iy = app.bell_canvas.coords(_img_item)
+            _x0, _y0, _x1, _y1 = app.bell_canvas.bbox(_img_item)
+            check("地图:画框固定 400x280,底图等比居中(窗口不再随图变高)",
+                  int(app.bell_canvas.cget("width")) == ui_bell.MAP_W
+                  and int(app.bell_canvas.cget("height")) == ui_bell.MAP_H
+                  and abs(_ix - (ui_bell.MAP_W - (_x1 - _x0)) / 2) <= 1
+                  and abs(_iy - (ui_bell.MAP_H - (_y1 - _y0)) / 2) <= 1,
+                  f"画布 {app.bell_canvas.cget('width')}x"
+                  f"{app.bell_canvas.cget('height')} 图@({_ix},{_iy}) "
+                  f"{_x1 - _x0}x{_y1 - _y0}")
             app.engine.bell_tool.ui_state = lambda: {
                 "spot": ("宝象国", None, None), "target": ""}
             app._bell_spot = None
@@ -2906,7 +2938,7 @@ def sec_bell_ui():
             kinds = [app.bell_canvas.type(i)
                      for i in app.bell_canvas.find_all()]
             check("地图:只有地图没坐标时不画点、也不写字",
-                  kinds == ["image"], str(kinds))
+                  kinds == ["image", "rectangle"], str(kinds))
 
             app.root.destroy()                # Tk 用完就拆(没有真引擎要收)
 

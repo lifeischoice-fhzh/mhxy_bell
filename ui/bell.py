@@ -16,11 +16,16 @@ from tools import bell as tools_bell
 from ui import widgets as ui_widgets
 
 # ---- 降妖伏魔小窗 ----
-PAD = 14                            # 窗口左右留白(地图 400 + 两边 14)
-MAP_W = 400                         # 地图宽固定;高度按底图长宽比算,不写死
-MAP_H = 199                         # 没有底图/没目标时的兜底高度(2:1)
+PAD = 14                            # 窗口左右留白(地图 380 + 两边 14)
+MAP_W = 380                         # 画框宽固定
+# 画框高固定:380x300(比例 1.27)。比 400x280 更竖一档 —— 长寿村能从 214 宽
+# 长到 229,代价是建邺城那种 2:1 的图上下的留边更多。换图时窗口**不跳高度**
+# (2026-10-21 用户定的:长寿村把窗口撑到 696 太突兀)。底图在框里等比居中。
+MAP_H = 300
 NAME_PT, NAME_MIN_PT = 20, 12       # 地名字号(磅);太长就往下缩,缩到这么多为止
 NUM_PT = 22                         # 坐标字号(磅)
+CLIENT_PT = 11                      # 底行角色名字号(磅)
+CLIENT_NONE = "暂未找到客户端"       # 没定位到时的占位句(底行不留空,用户看不出是没找到)
 DRAWER_W = 300                      # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
 DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
 
@@ -32,8 +37,7 @@ def set_coord(app, text):
     一眼看得出"哪张图、哪一格"。调用点:`build_bell` 和 `gui._drain_logs`
     (`bell_var.set` 之后各一次)。
     """
-    app.bell_coord_text = text or ""    # 记下当前显示的原文(测试/排查用)
-    name, x, y = _split_target(app.bell_coord_text)
+    name, x, y = _split_target(text or "")
     lbl = getattr(app, "bell_name", None)
     num = getattr(app, "bell_coord", None)
     if lbl is not None and lbl.winfo_exists():
@@ -69,6 +73,27 @@ def _fit_name(app):
         lbl.configure(font=(c["font"], size))
     except Exception:
         pass
+
+
+def set_client(app, name):
+    """底行那句角色名;没定位到就写占位句(留空的话用户看不出是"没找到")。
+
+    真实文本记在 `app.bell_client_text` 上:鼠标停到圆钮上时底行要临时换提示,
+    移开再还原成它(见 `_hint`)。
+    """
+    app.bell_client_text = (name or "").strip() or CLIENT_NONE
+    lbl = getattr(app, "bell_client_lbl", None)
+    if lbl is not None and lbl.winfo_exists():
+        lbl.configure(text=app.bell_client_text)
+
+
+def _hint(app, text):
+    """鼠标停在圆钮上:底行临时换一句说明;text 为空 = 还原角色名。"""
+    lbl = getattr(app, "bell_client_lbl", None)
+    if lbl is None or not lbl.winfo_exists():
+        return
+    lbl.configure(text=text or getattr(app, "bell_client_text", "")
+                  or CLIENT_NONE)
 
 
 def _split_target(text):
@@ -116,7 +141,6 @@ def build_bell(app):
     head.columnconfigure(0, weight=1)
     app.bell_head = head
     app.bell_var = tk.StringVar(value="")
-    app.bell_coord_text = ""
     app.bell_name = tk.Label(head, text="", bg=BG, fg=TXT, anchor="w",
                              font=(c["font"], NAME_PT))
     app.bell_name.grid(row=0, column=0, sticky="w")
@@ -141,13 +165,21 @@ def build_bell(app):
                                     command=app.on_toggle_theme)
     app.bell_theme_btn.pack(side="right")
     app.bell_client_lbl = tk.Label(foot, text="", bg=BG, fg=SUB, anchor="w",
-                                   font=(c["font"], 10))
+                                   font=(c["font"], CLIENT_PT))
     app.bell_client_lbl.pack(side="left")
     # width=0:按 28x28 的图走自然尺寸(不写这行,ttk 会按主题默认宽 77px 摆)
     app.bell_locate_btn = ttk.Button(foot, text="", width=0,
                                      style="BellIcon.TButton",
                                      command=app.on_locate_clients)
     app.bell_locate_btn.pack(side="left", padx=(8, 0))
+    # 两颗圆钮都没有文字:鼠标停上去时,**底行左侧那行字**临时换成它在干什么,
+    # 移开还原角色名(Tk 没有内置 tooltip,这是最省事又不加控件的做法)
+    app.bell_locate_btn.bind("<Enter>", lambda _e: _hint(app, "换客户端"))
+    app.bell_locate_btn.bind("<Leave>", lambda _e: _hint(app, ""))
+    app.bell_theme_btn.bind("<Enter>", lambda _e: _hint(
+        app, "深色模式" if app.bell_mode == "b" else "明亮模式"))
+    app.bell_theme_btn.bind("<Leave>", lambda _e: _hint(app, ""))
+    set_client(app, "")
 
     # ---- 右侧抽屉(采集的界面入口已撤,控件照建:开抽屉走 `toggle_drawer`) ----
     app.bell_drawer = tk.Frame(body, bg=BG, highlightthickness=1,
@@ -175,7 +207,7 @@ def _build_drawer(app):
 
     head = ttk.Frame(drawer, style="Bell.TFrame", padding=(12, 10, 12, 4))
     head.pack(fill="x")
-    tk.Label(head, image=ui_widgets.bell_image("chip", 122, 32),
+    tk.Label(head, image=ui_widgets.bell_image(122, 32),
              text="◆ 地图采集", compound="center", bg=c["card"],
              fg=c["green"], font=(c["font"], 11, "bold")).pack(side="left")
     ttk.Button(head, text="✕", width=3, style="BellGhost.TButton",
@@ -354,7 +386,7 @@ def apply_theme(app, mode=None):
 
 
 def draw_bell(app):
-    """把当前妖魔位置画到底图上;画布高度跟着底图长宽比走(不留死带)。"""
+    """把当前妖魔位置画到底图上。**画框固定 400x280**,底图按比例居中(换图窗口不跳)。"""
     c = getattr(app, "bell_canvas", None)
     if c is None or not c.winfo_exists():
         return
@@ -365,14 +397,12 @@ def draw_bell(app):
     app._bell_spot = spot
     sk = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
     if not spot:
-        _set_map_h(app, MAP_H)
         c.create_text(MAP_W // 2, MAP_H // 2, text="暂无目标",
                       fill=sk["sub"], font=(sk["font"], 12))
         return
     name, x, y = spot
     path = tools_bell.map_asset(name)
     if not path:
-        _set_map_h(app, MAP_H)
         c.create_text(MAP_W // 2, MAP_H // 2, text=f"缺「{name}」底图",
                       fill=sk["sub"], font=(sk["font"], 12))
         return
@@ -385,18 +415,20 @@ def draw_bell(app):
         got = getattr(app, "_bell_base", None)
         if not got or got[0] != key:
             img = Image.open(path).convert("RGB")
-            # 宽度定死 400,高度由底图长宽比决定 —— 写死高度会在上下留死带
-            ratio = MAP_W / float(img.width)
-            disp = img.resize((MAP_W, max(1, round(img.height * ratio))),
-                              Image.LANCZOS)
-            got = (key, ImageTk.PhotoImage(disp), ratio, disp.width,
-                   disp.height, img.size)
+            # 等比缩进画框(不是拉伸):取宽/高两个比例里小的那个,再居中
+            ratio = min(MAP_W / float(img.width), MAP_H / float(img.height))
+            dw = max(1, round(img.width * ratio))
+            dh = max(1, round(img.height * ratio))
+            got = (key, ImageTk.PhotoImage(img.resize((dw, dh), Image.LANCZOS)),
+                   ratio, dw, dh, img.size, (MAP_W - dw) // 2, (MAP_H - dh) // 2)
             app._bell_base = got
             app._bell_base_photo = got[1]      # Tk 的图得留引用,别被回收
-        _k, photo, ratio, dw, dh, src = got
-        _set_map_h(app, dh)
+        _k, photo, ratio, dw, dh, src, ox, oy = got
         app._bell_photo = photo
-        c.create_image(0, 0, image=photo, anchor="nw")
+        c.create_image(ox, oy, image=photo, anchor="nw")
+        # 1px 内描边:浅色模式下白底和彩图之间有个边界,深色下几乎看不见
+        c.create_rectangle(ox, oy, ox + dw - 1, oy + dh - 1,
+                           outline=sk["map_edge"])
         if x is None or y is None:
             return                             # 只有图没坐标:什么也不画
         fx, fy = tools_bell.map_pixel(name, x, y)
@@ -406,42 +438,12 @@ def draw_bell(app):
             # 得让用户在日志里看见,不然只会觉得"点怎么画到边上了"
             app.log(f"[铃铛]{name} ({x},{y}) 落到底图外面了(底图 {src[0]}x"
                     f"{src[1]}),点已夹到边上 —— 重新采一次这张底图")
-        dx = min(max(px_, 0), dw)
-        dy = min(max(py_, 0), dh)
+        dx = min(max(ox + px_, ox), ox + dw)
+        dy = min(max(oy + py_, oy), oy + dh)
         # 就一个红圆点(用户要求):外圈白描边,压在任何底图上都看得见
         c.create_oval(dx - 8, dy - 8, dx + 8, dy + 8, fill=sk["dot"],
                       outline=sk["dot_ring"], width=2)
     except Exception as err:
         c.delete("all")
-        _set_map_h(app, MAP_H)
         c.create_text(MAP_W // 2, MAP_H // 2, text=f"底图读取失败:{err}",
                       fill=sk["red"], font=(sk["font"], 12))
-
-
-def _set_map_h(app, h):
-    """画布高度 = 这张底图按 400 宽缩放后的高度(别用固定高,上下会留死带)。"""
-    c = app.bell_canvas
-    h = max(120, int(h))
-    try:
-        if int(c.cget("height")) == h:
-            return
-        c.configure(height=h)
-    except Exception:
-        return
-    _keep_on_screen(app)
-
-
-def _keep_on_screen(app):
-    """窗高变了以后把窗口夹回屏幕内(高的地图会长到屏幕外,底行就点不到)。"""
-    win = getattr(app, "bell_win", None)
-    try:
-        win.update_idletasks()
-        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        w, h = win.winfo_width(), win.winfo_height()
-        x, y = win.winfo_x(), win.winfo_y()
-        nx = max(0, min(x, max(0, sw - w)))
-        ny = max(0, min(y, max(0, sh - h)))
-        if (nx, ny) != (x, y):
-            ui_widgets.place(win, (nx, ny))
-    except Exception:
-        pass

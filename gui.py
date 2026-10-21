@@ -215,14 +215,12 @@ class App:
         return name or ""
 
     def _refresh_bell_locate(self, rect=None):
-        """把定位结果写到小窗底行:定位到哪台客户端就写角色名,没定位到清空。
+        """把定位结果写到小窗底行:定位到哪台客户端就写角色名,没定位到写占位句。
 
         客户端矩形不再显示(用户定的 2026-10-20)。
         """
-        lbl = getattr(self, "bell_client_lbl", None)
         try:
-            if lbl is not None and lbl.winfo_exists():
-                lbl.configure(text=(self._bell_client_label() if rect else ""))
+            ui_bell.set_client(self, self._bell_client_label() if rect else "")
         except Exception:
             pass
 
