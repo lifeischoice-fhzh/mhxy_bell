@@ -2634,13 +2634,15 @@ def sec_bell_ui():
                   not any("◆ 降妖伏魔 ◆" in _txt(w)
                           for w in _walk(app.bell_win)),
                   str(_texts(app.bell_win)))
-            check("小窗:底行两颗无文字圆钮(☀/☾ 切主题 + ↻ 换客户端)",
+            check("小窗:底行两颗无文字圆钮(↻ 换客户端 / ☀·☾ 切主题)",
                   _txt(app.bell_locate_btn) == ""
                   and _txt(app.bell_theme_btn) == ""
+                  and not hasattr(app, "bell_min_btn")
                   and not hasattr(app, "bell_frame_btn")
                   and not hasattr(app, "bell_region_clear_btn"),
                   f"{_txt(app.bell_locate_btn)!r}/"
-                  f"{_txt(app.bell_theme_btn)!r}")
+                  f"{_txt(app.bell_theme_btn)!r}/"
+                  f"{hasattr(app, 'bell_min_btn')}")
             # ---- 深色 / 明亮两套皮肤:底行那颗 ☀/☾ 切,选择存进 ui_mode ----
             _dark, _light = ui_widgets.BELL_SKINS["a"], ui_widgets.BELL_SKINS["b"]
             check("主题:默认是深色(A)",
@@ -2652,7 +2654,8 @@ def sec_bell_ui():
                   app.bell_mode == "b"
                   and str(app.bell_win.cget("bg")) == _light["bg"]
                   and str(app.bell_canvas.cget("bg")) == _light["paper"]
-                  and str(app.bell_name.cget("fg")) == _light["txt"]
+                  and str(app.bell_name.cget("fg")) == (
+                      _light["sub"] if app.bell_idle else _light["txt"])
                   and str(app.bell_coord.cget("fg")) == _light["gold"]
                   and app.cfg["bell"].get("ui_mode") == "b",
                   f"{app.bell_mode} {app.bell_win.cget('bg')} "
@@ -2763,11 +2766,13 @@ def sec_bell_ui():
 
             app._bell_spot = object()          # 逼它重画(不然缓存命中直接返回)
             ui_bell.draw_bell(app)
-            check("小窗:没妖魔时画布上只写「暂无目标」(不出现监听/定位字样)",
-                  _canvas_txt() == "暂无目标"
+            check("小窗:没妖魔时画布留空,「暂无目标」写在地名位",
+                  _canvas_txt() == ""
+                  and _txt(app.bell_name) == ui_bell.EMPTY_TEXT
+                  and _txt(app.bell_coord) == ""
                   and not any(k in t for t in _texts(app.bell_win)
                               for k in ("监听", "定位")),
-                  f"{_canvas_txt()} / {_texts(app.bell_win)}")
+                  f"{_canvas_txt()!r} / {_texts(app.bell_win)}")
 
             check("小窗:不再显示那两句提示语(右键说明 / 红点说明)",
                   not any("右键" in t for t in shown_texts)
@@ -2907,6 +2912,7 @@ def sec_bell_ui():
             app.engine.bell_tool.ui_state = lambda: {
                 "spot": ("宝象国", 88, 66), "target": "宝象国 (88, 66)"}
             app._bell_spot = None
+            app._bell_last_target = None           # 当成"新目标",应当弹一次
             ui_bell.draw_bell(app)
             items = [app.bell_canvas.type(i)
                      for i in app.bell_canvas.find_all()]
@@ -2931,6 +2937,20 @@ def sec_bell_ui():
                   f"画布 {app.bell_canvas.cget('width')}x"
                   f"{app.bell_canvas.cget('height')} 图@({_ix},{_iy}) "
                   f"{_x1 - _x0}x{_y1 - _y0}")
+            # 新鲜度:新目标弹一下,同值重画不弹
+            check("地图:新目标出现时红点做一次放大-回弹",
+                  bool(getattr(app, "_bell_pulse", None)),
+                  str(getattr(app, "_bell_pulse", None)))
+            _pump(app.root, 400)
+            _co = app.bell_canvas.coords(ovals[0])
+            check("地图:回弹结束红点回到 ±8(16px 直径)",
+                  abs((_co[2] - _co[0]) - 16) < 1
+                  and abs((_co[3] - _co[1]) - 16) < 1, str(_co))
+            app._bell_spot = None
+            ui_bell.draw_bell(app)         # 同一个目标再画一次:不该再弹
+            check("地图:同一目标重画不再回弹(切主题也不会)",
+                  getattr(app, "_bell_pulse", None) is None,
+                  str(getattr(app, "_bell_pulse", None)))
             app.engine.bell_tool.ui_state = lambda: {
                 "spot": ("宝象国", None, None), "target": ""}
             app._bell_spot = None
@@ -2939,6 +2959,17 @@ def sec_bell_ui():
                      for i in app.bell_canvas.find_all()]
             check("地图:只有地图没坐标时不画点、也不写字",
                   kinds == ["image", "rectangle"], str(kinds))
+            # 没目标:画布完全留空,占位句写在地名位(用户 2026-10-21 定的)
+            app.engine.bell_tool.ui_state = lambda: {"spot": None, "target": ""}
+            app._bell_spot = None
+            ui_bell.set_coord(app, "")
+            ui_bell.draw_bell(app)
+            check("地图:没目标 -> 画布留空,占位句在地名位",
+                  len(app.bell_canvas.find_all()) == 0
+                  and _txt(app.bell_name) == ui_bell.EMPTY_TEXT
+                  and _txt(app.bell_coord) == "",
+                  f"{len(app.bell_canvas.find_all())} "
+                  f"{_txt(app.bell_name)!r} {_txt(app.bell_coord)!r}")
 
             app.root.destroy()                # Tk 用完就拆(没有真引擎要收)
 

@@ -200,9 +200,9 @@ class App:
         if not self._bell_open():
             ui_bell.build_bell(self)
         bt = self.engine.bell_tool.ui_state()["target"]
-        if bt:
-            self.bell_var.set(bt)
-            ui_bell.set_coord(self, bt)       # 地名/坐标是两个控件,得跟着写
+        # 有没有目标都要写一次:重进功能时工具刚 reset,窗口里可能还挂着上一次的地名
+        self.bell_var.set(bt)
+        ui_bell.set_coord(self, bt)
         # 大小由内容定(皮肤换了以后高度会变,写死一个数会摆偏):set_place 拿
         # 窗口的请求尺寸来居中。
         self._show_here(self.bell_win)
@@ -516,14 +516,14 @@ class App:
                     self._warn_bell_size(bad)
             else:
                 self._bell_size_warned = ""   # 改回支持的分辨率:下次再歪了还能提醒
-            if bt:
-                bv = getattr(self, "bell_var", None)
-                if bv is not None and bv.get() != bt:
-                    bv.set(bt)
-                    # 地名/坐标是两个控件,`bell_var` 改了它们不会自己变 ——
-                    # 必须跟着写(原项目 2026-10-17 用户报"一直停在等待")。
-                    ui_bell.set_coord(self, bt)
-                    ui_bell.draw_bell(self)
+            # 目标清空(工具 reset)也要刷一次:不然窗口里还挂着上一次的地名
+            bv = getattr(self, "bell_var", None)
+            if bv is not None and bv.get() != bt:
+                bv.set(bt)
+                # 地名/坐标是两个控件,`bell_var` 改了它们不会自己变 ——
+                # 必须跟着写(原项目 2026-10-17 用户报"一直停在等待")。
+                ui_bell.set_coord(self, bt)
+                ui_bell.draw_bell(self)
         except Exception:
             pass
         # 引擎线程看门狗:线程退出、或 OCR 假就绪(warmup 推理失败)都重建(10 秒冷却)

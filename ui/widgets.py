@@ -99,6 +99,29 @@ def dark_titlebar(win, color="#0f1116"):
         pass
 
 
+def hide_maximize(win):
+    """让标题栏右上角只剩最小化 + 关闭(用户 2026-10-21 定的)。
+
+    Tk 的 `resizable(False, False)` 本身就把 `WS_MAXIMIZEBOX` 清了(只是把它
+    置灰),这里再清一遍 + `SWP_FRAMECHANGED` 让非客户区重画。
+    **实测(Win11 24H2 26100)清完那颗按钮只会更灰、不会消失** —— 原生
+    `CreateWindowEx` 建一个没有 `WS_MAXIMIZEBOX` 的窗口也一样,所以那不是本
+    应用的问题;真要它消失得自绘标题栏,代价是丢任务栏图标和最小化,不做。
+    保留这个函数:系统上按钮确实点不动,别的 Windows 版本也许能真删掉。
+    """
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        gwl_style, ws_maximizebox = -16, 0x00010000
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, gwl_style)
+        ctypes.windll.user32.SetWindowLongW(hwnd, gwl_style,
+                                            style & ~ws_maximizebox)
+        # SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_FRAMECHANGED
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x1 | 0x2 | 0x4 | 0x20)
+    except Exception:
+        pass
+
+
 def stop_anim(win):
     """把还没跑完的动效停掉。
 
@@ -454,7 +477,9 @@ def apply_bell_skin(mode=None):
             key = f"Bell{tag}_{m}"
             if key in _BELL_ELEMS:
                 continue
-            imgs = _icon_images(glyphs[m] if glyphs else "↻", pal)
+            glyph = ("↻" if glyphs is None
+                     else glyphs[m] if isinstance(glyphs, dict) else glyphs)
+            imgs = _icon_images(glyph, pal)
             _BELL_IMGS[("btn", key)] = imgs
             _ensure(key, imgs, 10)
 

@@ -26,6 +26,9 @@ NAME_PT, NAME_MIN_PT = 20, 12       # 地名字号(磅);太长就往下缩,缩�
 NUM_PT = 22                         # 坐标字号(磅)
 CLIENT_PT = 11                      # 底行角色名字号(磅)
 CLIENT_NONE = "暂未找到客户端"       # 没定位到时的占位句(底行不留空,用户看不出是没找到)
+EMPTY_TEXT = "暂无目标"              # 没有目标时占**地名位**(画布留空,不写字)
+PULSE_FRAMES = (11, 13, 15, 15, 13, 11, 9, 8)   # 新目标:红点放大再回弹(半径,px)
+PULSE_MS = 25                                    # 每帧间隔,全程 ~175ms
 DRAWER_W = 300                      # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
 DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
 
@@ -40,8 +43,13 @@ def set_coord(app, text):
     name, x, y = _split_target(text or "")
     lbl = getattr(app, "bell_name", None)
     num = getattr(app, "bell_coord", None)
+    # 没目标:占位句放**地名位**(灰),画布留空 —— 别在画布中间再写一句,
+    # 那样看起来像卡片上开了个洞(用户 2026-10-21 定的)
+    app.bell_idle = not name
+    c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
     if lbl is not None and lbl.winfo_exists():
-        lbl.configure(text=name or "")
+        lbl.configure(text=name or EMPTY_TEXT,
+                      fg=c["sub"] if app.bell_idle else c["txt"])
     if num is not None and num.winfo_exists():
         num.configure(text="" if x is None else f"{x}, {y}")
     _fit_name(app)
@@ -124,12 +132,15 @@ def build_bell(app):
     app.bell_win.configure(bg=BG)
     app.bell_win.attributes("-topmost", True)
     app.bell_win.resizable(False, False)
-    # 标题栏颜色:**窗口真正显示出来以后**再设才生效(建窗那一下设了会被系统盖回去),
-    # 所以除了现在试一次,每次 <Map>(显示/重新显示)都再刷一遍。
-    ui_widgets.dark_titlebar(app.bell_win, c["titlebar"])
-    app.bell_win.bind(
-        "<Map>", lambda _e: ui_widgets.dark_titlebar(
-            app.bell_win, ui_widgets.bell_palette(app.bell_mode)["titlebar"]))
+    # 标题栏:颜色要**窗口显示出来以后**再设才生效(建窗那一下设了会被系统盖回去);
+    # 最大化按钮也在这里去掉,只留最小化 + 关闭。所以每次 <Map> 都刷一遍。
+    def _dress(_e=None):
+        ui_widgets.dark_titlebar(
+            app.bell_win, ui_widgets.bell_palette(app.bell_mode)["titlebar"])
+        ui_widgets.hide_maximize(app.bell_win)
+
+    _dress()
+    app.bell_win.bind("<Map>", _dress)
 
     body = tk.Frame(app.bell_win, bg=BG)      # 卡片在左,抽屉在右
     body.pack(fill="both", expand=True)
@@ -155,8 +166,7 @@ def build_bell(app):
     app.bell_canvas.pack(padx=PAD)
 
     # 底行:左边「角色名 + 紧跟的 ↻(换客户端)」,右下角「☀/☾(切主题)」。
-    # 从左往右 pack:角色名只占文字的宽度,↻ 自动跟在它后面 —— 名字多长,按钮
-    # 就跟到哪(不用算 x);☀/☾ 先从右边占位,名字再长也挤不掉它。
+    # 最小化/关闭走系统标题栏(不再放底行,重复)。
     foot = tk.Frame(body, bg=BG)
     foot.pack(fill="x", padx=PAD, pady=(12, 12))
     app.bell_foot = foot
@@ -172,7 +182,7 @@ def build_bell(app):
                                      style="BellIcon.TButton",
                                      command=app.on_locate_clients)
     app.bell_locate_btn.pack(side="left", padx=(8, 0))
-    # 两颗圆钮都没有文字:鼠标停上去时,**底行左侧那行字**临时换成它在干什么,
+    # 圆钮都没有文字:鼠标停上去时,**底行左侧那行字**临时换成它在干什么,
     # 移开还原角色名(Tk 没有内置 tooltip,这是最省事又不加控件的做法)
     app.bell_locate_btn.bind("<Enter>", lambda _e: _hint(app, "换客户端"))
     app.bell_locate_btn.bind("<Leave>", lambda _e: _hint(app, ""))
@@ -356,6 +366,49 @@ def toggle_drawer(app):
         refresh_drawer(app)
 
 
+def _stop_pulse(app):
+    """停掉还没跑完的红点回弹(重画/切主题/窗口销毁前)。"""
+    aid = getattr(app, "_bell_pulse", None)
+    app._bell_pulse = None
+    if not aid:
+        return
+    try:
+        app.bell_canvas.after_cancel(aid)
+    except Exception:
+        pass
+
+
+def _pulse_maybe(app, c, item, dx, dy, target):
+    """**新目标**才做一次放大-回弹;同值重画/切主题不触发。
+
+    判据放在 `_bell_last_target`:主题切换会故意把 `_bell_spot` 设成哨兵逼重画,
+    拿它判断就会每次都弹一下。
+    """
+    if getattr(app, "_bell_last_target", None) == target:
+        return
+    app._bell_last_target = target
+    _pulse(app, c, item, dx, dy)
+
+
+def _pulse(app, c, item, dx, dy):
+    """红点放大再回弹:8 帧、约 175ms(画布没有缓动,手搓半径)。"""
+    def step(i):
+        app._bell_pulse = None
+        try:
+            if not c.winfo_exists():
+                return
+            r = PULSE_FRAMES[i] if i < len(PULSE_FRAMES) else 8
+            c.coords(item, dx - r, dy - r, dx + r, dy + r)
+        except Exception:
+            return
+        if i + 1 < len(PULSE_FRAMES):
+            try:
+                app._bell_pulse = c.after(PULSE_MS, lambda: step(i + 1))
+            except Exception:
+                app._bell_pulse = None
+    step(0)
+
+
 def apply_theme(app, mode=None):
     """切换深色 / 明亮:重配样式,再把 tk 控件的颜色换掉(ttk 按钮靠样式自动变)。
 
@@ -376,7 +429,9 @@ def apply_theme(app, mode=None):
         app.bell_drawer.configure(highlightbackground=c["line"])
     except Exception:
         pass
-    app.bell_name.configure(bg=c["bg"], fg=c["txt"])
+    app.bell_name.configure(bg=c["bg"],
+                            fg=c["sub"] if getattr(app, "bell_idle", True)
+                            else c["txt"])
     app.bell_coord.configure(bg=c["bg"], fg=c["gold"])
     app.bell_client_lbl.configure(bg=c["bg"], fg=c["sub"])
     app.bell_canvas.configure(bg=c["paper"])
@@ -391,15 +446,15 @@ def draw_bell(app):
     if c is None or not c.winfo_exists():
         return
     spot = app.engine.bell_tool.ui_state()["spot"]
-    if app._bell_spot == spot and c.find_all():
+    # 没目标必须每次都走到下面那句 delete:画布上可能还挂着上一次的图/点
+    if spot and app._bell_spot == spot and c.find_all():
         return
+    _stop_pulse(app)
     c.delete("all")
     app._bell_spot = spot
     sk = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
     if not spot:
-        c.create_text(MAP_W // 2, MAP_H // 2, text="暂无目标",
-                      fill=sk["sub"], font=(sk["font"], 12))
-        return
+        return                                 # 占位句在地名位(set_coord),画布留空
     name, x, y = spot
     path = tools_bell.map_asset(name)
     if not path:
@@ -441,8 +496,9 @@ def draw_bell(app):
         dx = min(max(ox + px_, ox), ox + dw)
         dy = min(max(oy + py_, oy), oy + dh)
         # 就一个红圆点(用户要求):外圈白描边,压在任何底图上都看得见
-        c.create_oval(dx - 8, dy - 8, dx + 8, dy + 8, fill=sk["dot"],
-                      outline=sk["dot_ring"], width=2)
+        item = c.create_oval(dx - 8, dy - 8, dx + 8, dy + 8, fill=sk["dot"],
+                            outline=sk["dot_ring"], width=2)
+        _pulse_maybe(app, c, item, dx, dy, (name, x, y))
     except Exception as err:
         c.delete("all")
         c.create_text(MAP_W // 2, MAP_H // 2, text=f"底图读取失败:{err}",
