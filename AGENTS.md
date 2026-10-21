@@ -11,7 +11,7 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 ```bash
 # Python 用项目 venv(建法见 README)
 .venv/Scripts/pythonw.exe main.py        # 启动
-.venv/Scripts/python.exe tests.py --quiet # 回归:194 条,约 15 秒
+.venv/Scripts/python.exe tests.py --quiet # 回归:约 12 秒,全绿再收工(条数以跑出来的为准)
 .venv/Scripts/python.exe check_shots.py   # 真机截图离线校验(docs/shots,10 张,约 7 秒)
 ```
 
