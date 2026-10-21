@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "use_gpu": True,     # OCR 用显卡加速(DirectML),失败自动回退 CPU
     "bell_client": "",       # 降妖伏魔:用户选的那台客户端(标题/角色名)
     "bell_interval": 0.0,    # 降妖伏魔:自己的扫描间隔(0=跟着调度节奏走)
+    "bell_pos": [],          # 降妖伏魔:小窗上次的位置 [x, y](空=居中)
     "active_tool": "",       # 当前进入的功能(本应用固定 bell)
 }
 
@@ -99,7 +100,7 @@ os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
 CONFIG_SECTIONS = {
     "app": ("use_gpu", "active_tool"),
-    "bell": ("bell_client", "bell_interval", "ui_mode"),
+    "bell": ("bell_client", "bell_interval", "ui_mode", "bell_pos"),
 }
 _KEY_SECTION = {k: s for s, ks in CONFIG_SECTIONS.items() for k in ks}
 
@@ -142,6 +143,31 @@ def app_cfg(cfg: dict) -> dict:
 def bell_cfg(cfg: dict) -> dict:
     """降妖伏魔自己的分区。"""
     return cfg.setdefault("bell", {})
+
+
+def system_light_mode() -> bool:
+    """系统是不是「明亮」主题(读 HKCU 的 AppsUseLightTheme;读不到按深色)。"""
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes"
+                r"\Personalize") as key:
+            return bool(winreg.QueryValueEx(key, "AppsUseLightTheme")[0])
+    except Exception:
+        return False
+
+
+def default_ui_mode(ui_mode=None) -> str:
+    """小窗皮肤:a 深色 / b 明亮。
+
+    用户选过(`bell.ui_mode` 是 a/b)就用它;没选过的第一次跑跟随系统
+    (2026-10-21 用户要求:别让"明亮党"每次开都要手动切)。
+    """
+    mode = str(ui_mode or "")
+    if mode in ("a", "b"):
+        return mode
+    return "b" if system_light_mode() else "a"
 
 
 def load_config() -> dict:

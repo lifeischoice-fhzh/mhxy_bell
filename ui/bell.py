@@ -29,6 +29,7 @@ CLIENT_NONE = "暂未找到客户端"       # 没定位到时的占位句(底行
 EMPTY_TEXT = "暂无目标"              # 没有目标时占**地名位**(画布留空,不写字)
 PULSE_FRAMES = (11, 13, 15, 15, 13, 11, 9, 8)   # 新目标:红点放大再回弹(半径,px)
 PULSE_MS = 25                                    # 每帧间隔,全程 ~175ms
+FLASH_MS = 1600                      # 底行就地提示停留时长(到点还原角色名)
 DRAWER_W = 300                      # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
 DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
 
@@ -96,12 +97,59 @@ def set_client(app, name):
 
 
 def _hint(app, text):
-    """鼠标停在圆钮上:底行临时换一句说明;text 为空 = 还原角色名。"""
+    """鼠标停在圆钮上:底行临时换一句说明;text 为空 = 还原角色名。
+
+    提示用金色,和灰色的角色名分开 —— 同一个位置同一种颜色,看起来像"名字变了"
+    (2026-10-21 用户提的)。
+    """
     lbl = getattr(app, "bell_client_lbl", None)
     if lbl is None or not lbl.winfo_exists():
         return
-    lbl.configure(text=text or getattr(app, "bell_client_text", "")
-                  or CLIENT_NONE)
+    _stop_flash(app)                       # 手动划过就接管,别让提示定时器再改字
+    c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
+    if text:
+        lbl.configure(text=text, fg=c["gold"])
+    else:
+        lbl.configure(text=getattr(app, "bell_client_text", "") or CLIENT_NONE,
+                      fg=c["sub"])
+
+
+def _stop_flash(app):
+    """撤掉底行还没到点的就地提示(不还原文字,还原是下一次写底行的事)。"""
+    aid = getattr(app, "_bell_flash", None)
+    app._bell_flash = None
+    if aid:
+        try:
+            app.bell_client_lbl.after_cancel(aid)
+        except Exception:
+            pass
+
+
+def flash_foot(app, text, color="red", ms=FLASH_MS):
+    """底行就地换一句提示(默认红字),到点还原角色名 —— **不弹模态框**。
+
+    用户 2026-10-21 定的:点一下 ↻ 就弹个要点「确定」的框是打断游戏;
+    提示放底行,瞥一眼就够,也不多占控件。
+    """
+    lbl = getattr(app, "bell_client_lbl", None)
+    if lbl is None or not lbl.winfo_exists():
+        return
+    _stop_flash(app)
+    c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
+    lbl.configure(text=text, fg=c[color])
+
+    def done():
+        app._bell_flash = None
+        try:
+            if not lbl.winfo_exists():
+                return
+            cc = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
+            lbl.configure(text=getattr(app, "bell_client_text", "")
+                          or CLIENT_NONE, fg=cc["sub"])
+        except Exception:
+            pass
+
+    app._bell_flash = lbl.after(ms, done)
 
 
 def _split_target(text):
@@ -142,7 +190,9 @@ def build_bell(app):
     _dress()
     app.bell_win.bind("<Map>", _dress)
 
-    body = tk.Frame(app.bell_win, bg=BG)      # 卡片在左,抽屉在右
+    # 1px 描边:深色底压在深色场景上时,只靠系统阴影分不清窗口边界(2026-10-21)
+    body = tk.Frame(app.bell_win, bg=BG, highlightthickness=1,
+                    highlightbackground=c["win_edge"])
     body.pack(fill="both", expand=True)
     app.bell_body = body
 
@@ -202,7 +252,10 @@ def build_bell(app):
     app.bell_win.protocol("WM_DELETE_WINDOW", app.on_close)   # 单窗应用:× = 退出
     app._bell_photo = None
     app._bell_spot = None
-    ui_widgets.set_place(app.bell_win)     # 大小由内容定,这里只定位置(居中)
+    # 位置:存过(上次退出时记的)就摆回原处,没有/坏了才居中(2026-10-21)。
+    # 先 update_idletasks:不然 winfo_reqwidth 还是 Toplevel 的默认 200x200,居中会算歪。
+    app.bell_win.update_idletasks()
+    ui_widgets.set_place(app.bell_win, pos=app._get("bell_pos"))
     return app.bell_win
 
 
@@ -427,13 +480,16 @@ def apply_theme(app, mode=None):
             f.configure(bg=c["bg"])
     try:
         app.bell_drawer.configure(highlightbackground=c["line"])
+        app.bell_body.configure(highlightbackground=c["win_edge"])
     except Exception:
         pass
     app.bell_name.configure(bg=c["bg"],
                             fg=c["sub"] if getattr(app, "bell_idle", True)
                             else c["txt"])
     app.bell_coord.configure(bg=c["bg"], fg=c["gold"])
-    app.bell_client_lbl.configure(bg=c["bg"], fg=c["sub"])
+    app.bell_client_lbl.configure(bg=c["bg"])
+    if not getattr(app, "_bell_flash", None):     # 正在提示:字色留给提示自己
+        app.bell_client_lbl.configure(fg=c["sub"])
     app.bell_canvas.configure(bg=c["paper"])
     ui_widgets.dark_titlebar(win, c["titlebar"])
     app._bell_spot = object()          # 逼重画:画布底/文字色/红点都要跟着换

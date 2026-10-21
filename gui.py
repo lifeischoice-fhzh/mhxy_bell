@@ -115,6 +115,9 @@ class App:
         self.root.report_callback_exception = self._on_tk_error
         self.root.withdraw()           # 主窗口不露面:界面就是降妖伏魔小窗
         self.cfg = core.load_config()
+        # 第一次跑(没选过皮肤)跟随系统深浅色;选过就以配置为准(2026-10-21)
+        _bell_part = core.bell_cfg(self.cfg)
+        _bell_part["ui_mode"] = core.default_ui_mode(_bell_part.get("ui_mode"))
         try:
             if os.path.exists(core.LOG_PATH):
                 import datetime
@@ -138,13 +141,14 @@ class App:
         self.show_bell()              # 启动直接进降妖伏魔(单窗应用)
 
     # ---- 窗口摆位 ----
-    def _show_here(self, win, size=None):
+    def _show_here(self, win, size=None, pos=None):
         """把窗口摆到位再淡入;set_place 按请求尺寸居中(单窗应用只此一处)。
 
         显示本身交给 `pop_in`(它先设全透明再 deiconify,不然会闪一帧满不透明),
         并把这扇窗提到前面 —— 不然它可能开在游戏/浏览器后面,用户看不到。
+        `pos` 给了就用它(小窗记住的位置),坏了 set_place 自己退回居中。
         """
-        xy = ui_widgets.set_place(win, size=size)
+        xy = ui_widgets.set_place(win, size=size, pos=pos)
         pop_in(win, xy=xy)
         try:
             win.lift()
@@ -204,8 +208,8 @@ class App:
         self.bell_var.set(bt)
         ui_bell.set_coord(self, bt)
         # 大小由内容定(皮肤换了以后高度会变,写死一个数会摆偏):set_place 拿
-        # 窗口的请求尺寸来居中。
-        self._show_here(self.bell_win)
+        # 窗口的请求尺寸来居中;存过位置就摆回上次拖到的地方。
+        self._show_here(self.bell_win, pos=self._get("bell_pos"))
         self._enter_bell_slow()           # 慢活排在动画起跑之后
         ui_bell.draw_bell(self)
 
@@ -237,12 +241,12 @@ class App:
 
     def on_locate_clients(self):
         """重新找客户端(底行那个 ↻);多开时弹列表让用户按角色名选一台。"""
-        import tkinter.messagebox as mb
         found, _mini = core.find_client_windows()
         if not found:
             self._refresh_bell_locate(None)
-            mb.showinfo("降妖伏魔", "没找到客户端窗口,请确认游戏已启动且未最小化",
-                        parent=self.bell_win)
+            # 就地提示,不弹模态框(2026-10-21 用户定的):点一下 ↻ 不该打断游戏
+            ui_bell.flash_foot(self, "没找到客户端")
+            self.log("[铃铛]没找到客户端窗口")
             return
         if not self._ask_bell_client(force=len(found) > 1):
             return
@@ -556,12 +560,30 @@ class App:
             pass
         self.root.after(POLL_MS, self._drain_logs)
 
+    def save_bell_pos(self):
+        """把小窗当前位置记进配置(下次启动摆回原处,不再压回屏幕正中)。
+
+        `win_origin` 给的是 geometry 那一套坐标,和 `set_place(pos=...)` 对得上。
+        """
+        win = getattr(self, "bell_win", None)
+        if win is None:
+            return
+        try:
+            if not win.winfo_exists():
+                return
+            xy = ui_widgets.win_origin(win)
+            if xy:
+                self._set("bell_pos", [int(xy[0]), int(xy[1])])
+        except Exception:
+            pass
+
     def on_close(self):
         """退出应用:关小窗(它就是唯一的界面)、存配置、拆 Tk。
 
         引擎/工具线程都是 daemon,进程一退就没了 —— 不在这里等它们(join 会让
         界面冻住,原项目的老坑)。
         """
+        self.save_bell_pos()              # 位置也一起存,下次摆在原地
         try:
             core.save_config(self.cfg)
         except Exception:

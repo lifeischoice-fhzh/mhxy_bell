@@ -2667,6 +2667,28 @@ def sec_bell_ui():
                   and app.cfg["bell"].get("ui_mode") == "a",
                   f"{app.bell_mode} {app.bell_win.cget('bg')} "
                   f"{app.cfg['bell'].get('ui_mode')}")
+            # 首启跟随系统:没选过 ui_mode 时按系统深浅色;选过就不跟
+            with patch(mods=(core,), system_light_mode=lambda: True):
+                _first_light = core.default_ui_mode("")
+            with patch(mods=(core,), system_light_mode=lambda: False):
+                _first_dark = core.default_ui_mode("")
+                _kept = core.default_ui_mode("b")
+            check("首启皮肤:没选过就跟随系统(系统明亮->B / 深色->A),选过的照旧",
+                  _first_light == "b" and _first_dark == "a"
+                  and _kept == "b",
+                  f"{_first_light}/{_first_dark}/{_kept}")
+            # 窗口最外那圈 1px:深色底压在深色场景上时,只靠系统阴影分不清边界
+            _edge_a = ui_widgets.bell_palette("a")["win_edge"]
+            _edge_b = ui_widgets.bell_palette("b")["win_edge"]
+            _edge_now = str(app.bell_body.cget("highlightbackground"))
+            app.on_toggle_theme()
+            _edge_light = str(app.bell_body.cget("highlightbackground"))
+            app.on_toggle_theme()
+            check("小窗:窗口一圈 1px 描边(切主题也跟着换色)",
+                  int(app.bell_body.cget("highlightthickness")) == 1
+                  and _edge_now == _edge_a and _edge_light == _edge_b,
+                  f"{app.bell_body.cget('highlightthickness')} "
+                  f"{_edge_now}/{_edge_light} 期望 {_edge_a}/{_edge_b}")
             # 底行高度写死 28px,量一遍:按钮的下边缘得在底行里面(没被裁掉)
             _foot = app.bell_locate_btn.master
             _rows = (app.bell_locate_btn,)
@@ -2710,6 +2732,18 @@ def sec_bell_ui():
                   and _txt(app.bell_client_lbl) == "祭花′",
                   f"{_hover_a!r}/{_hover_b!r}/"
                   f"{_txt(app.bell_client_lbl)!r}")
+            _c_gold = ui_widgets.bell_palette(app.bell_mode)["gold"]
+            _c_sub = ui_widgets.bell_palette(app.bell_mode)["sub"]
+            app.root.update()
+            app.bell_locate_btn.event_generate("<Enter>", when="now")
+            app.root.update()
+            _hover_fg = str(app.bell_client_lbl.cget("fg"))
+            app.bell_locate_btn.event_generate("<Leave>", when="now")
+            app.root.update()
+            _rest_fg = str(app.bell_client_lbl.cget("fg"))
+            check("底行:提示用金色、角色名用灰色(同一个位置也要分得开)",
+                  _hover_fg == _c_gold and _rest_fg == _c_sub,
+                  f"{_hover_fg}/{_rest_fg}")
             ui_bell.set_client(app, "")
             # 字号是磅值(20pt 在 100% 下重排成 ~41px 高):头部行高必须由内容撑,
             # 写死高度会把地名/坐标上下裁掉(用户 2026-10-21 报"地图名显示不全")
@@ -2860,9 +2894,21 @@ def sec_bell_ui():
                       pops == [] and warns == [], f"{pops} {warns}")
             with patch(find_client_windows=lambda: ([], [])):
                 app.on_locate_clients()
-                check("定位:没找到客户端也给提示(弹框说清楚)",
-                      len(pops) == 1 and "没找到客户端" in str(pops[-1]),
-                      str(pops))
+                _c_red = ui_widgets.bell_palette(app.bell_mode)["red"]
+                check("定位:没找到客户端 -> 底行就地提示(不弹模态框)",
+                      pops == []
+                      and _txt(app.bell_client_lbl) == "没找到客户端"
+                      and str(app.bell_client_lbl.cget("fg")) == _c_red,
+                      f"{pops} {_txt(app.bell_client_lbl)!r} "
+                      f"{app.bell_client_lbl.cget('fg')}")
+                app.root.update()
+                _pump(app.root, 1900)      # 提示自己会收回去,还原角色名
+                check("定位:就地提示过一会儿收回去(还原底行角色名)",
+                      _txt(app.bell_client_lbl) == ui_bell.CLIENT_NONE
+                      and str(app.bell_client_lbl.cget("fg"))
+                      == ui_widgets.bell_palette(app.bell_mode)["sub"],
+                      f"{_txt(app.bell_client_lbl)!r} "
+                      f"{app.bell_client_lbl.cget('fg')}")
             app._bell_size_warned = ""
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE", [0, 0, 1291, 1025])], [])):
@@ -2970,6 +3016,37 @@ def sec_bell_ui():
                   and _txt(app.bell_coord) == "",
                   f"{len(app.bell_canvas.find_all())} "
                   f"{_txt(app.bell_name)!r} {_txt(app.bell_coord)!r}")
+
+            # ---- 位置记忆:存过的位置摆回去,坏位置退回居中 ----
+            _scr = (app.bell_win.winfo_screenwidth(),
+                    app.bell_win.winfo_screenheight())
+            app._set("bell_pos", [61, 43])
+            app.bell_win.destroy()
+            ui_bell.build_bell(app)
+            app._show_here(app.bell_win, pos=app._get("bell_pos"))
+            _pump(app.root, 400)
+            check("小窗:存过位置就摆回原处(不再每次压回屏幕正中)",
+                  ui_widgets.win_origin(app.bell_win) == (61, 43),
+                  f"{ui_widgets.win_origin(app.bell_win)} 期望 (61, 43)")
+            app._set("bell_pos", [99999, 99999])
+            app.bell_win.destroy()
+            ui_bell.build_bell(app)
+            _req = (app.bell_win.winfo_reqwidth(),
+                    app.bell_win.winfo_reqheight())
+            app._show_here(app.bell_win, pos=app._get("bell_pos"))
+            _pump(app.root, 400)
+            check("小窗:存的位置已经不在屏幕里 -> 退回居中",
+                  ui_widgets.win_origin(app.bell_win)
+                  == ui_widgets.centered_xy(_req, _scr),
+                  f"{ui_widgets.win_origin(app.bell_win)} 期望 "
+                  f"{ui_widgets.centered_xy(_req, _scr)}")
+            # 拖动后的位置要在退出时写进配置
+            app.bell_win.geometry("+140+110")
+            app.root.update()
+            app.save_bell_pos()
+            check("小窗:退出时记住当前位置(下次摆回这儿)",
+                  app.cfg["bell"].get("bell_pos") == [140, 110],
+                  str(app.cfg["bell"].get("bell_pos")))
 
             app.root.destroy()                # Tk 用完就拆(没有真引擎要收)
 

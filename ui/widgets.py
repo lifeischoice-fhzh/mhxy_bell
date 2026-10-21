@@ -56,16 +56,37 @@ def place(win, xy):
         pass
 
 
-def set_place(win, size=None, ref=None, screen=None):
+def usable_xy(xy, size, screen):
+    """存下来的窗口位置还能不能用:得留一条标题栏在屏幕里,不然拖都拖不回来。
+
+    返回 (x, y) 或 None(位置坏了/屏幕换了)。
+    """
+    if not isinstance(xy, (list, tuple)):
+        return None
+    try:
+        x, y = int(xy[0]), int(xy[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    w = int(size[0])
+    sw, sh = int(screen[0]), int(screen[1])
+    if -w + 120 <= x <= sw - 120 and 0 <= y <= sh - 30:
+        return (x, y)
+    return None
+
+
+def set_place(win, size=None, ref=None, screen=None, pos=None):
     """决定这个窗口摆哪(记在 win.p_xy 上,并立刻摆好),返回 (x, y)。
 
-    size 不给就用窗口的请求尺寸。所有主窗都居中 —— 这是一个应用,不各摆各的。
+    size 不给就用窗口的请求尺寸。`pos` 是上次退出时存的位置:还在屏幕里就
+    摆回原处(用户 2026-10-21 要求:别每次启动都压回屏幕正中),否则居中。
     """
     if screen is None:
         screen = (win.winfo_screenwidth(), win.winfo_screenheight())
     if size is None:
         size = (win.winfo_reqwidth(), win.winfo_reqheight())
-    xy = centered_xy(size, screen, ref)
+    xy = usable_xy(pos, size, screen) if pos else None
+    if xy is None:
+        xy = centered_xy(size, screen, ref)
     win.p_xy = xy
     place(win, xy)
     return xy
@@ -249,6 +270,8 @@ BELL_SKINS = {
         #                           就是窗口底色,不该出现一块"另一个颜色"的框
         "line": "#232936",        # 分隔线/细边
         "map_edge": "#232936",    # 地图那圈 1px 描边(深色下几乎看不见)
+        "win_edge": "#2a3242",    # 窗口最外那圈 1px:深色底压在深色场景上时,
+        #                           只靠系统阴影分不清窗口到哪儿为止
         "btn": "#20242e",         # 按钮底
         "btn_line": "#333a4a",
         "gold": "#f0c05a",        # 金:坐标(全窗唯一强调色)
@@ -271,6 +294,7 @@ BELL_SKINS = {
         "paper": "#ffffff",       # 画布底:同窗口底(留边融进白底,只靠 1px 描边分界)
         "line": "#e4e7ec",
         "map_edge": "#d8dde5",    # 白底上的地图边界:比 line 再深一档才看得见
+        "win_edge": "#e4e7ec",    # 窗口最外那圈 1px(白底用浅灰,别抢眼)
         "btn": "#f4f5f7",
         "btn_line": "#dfe3e9",
         "gold": "#111827",        # 坐标:近黑(明亮模式下不用金色)
