@@ -182,7 +182,7 @@ class PanelShot:
     """按区域真裁的假屏(画面 = panel_screen(宽, 高))。
 
     和 FakeScreen 的差别:**看 region**。假 OCR 得靠"裁出来多大"分清对话框条带 /
-    任务栏那块 / 整窗,而 FakeScreen 恒返回同一张图,裁哪都一样大。
+    任务栏那块 / 对话框条带,而 FakeScreen 恒返回同一张图,裁哪都一样大。
     """
 
     def __init__(self, w=1000, h=880):
@@ -211,13 +211,10 @@ def mk_engine(bank, blocks, cfg=None, crops=None):
     app.bank = bank
     app.said = []
     app.last_answer = ""
-    app.logs = []            # 界面滚动框会显示的(ui=True)
-    app.logs_all = []        # 全部日志(含只写文件的),带 ui 标记
+    app.logs = []            # 全部日志(小窗没有日志区,所有消息只进文件)
 
-    def _log(msg, ui=True, detail="", ui_text=None):
-        app.logs_all.append((msg, ui))
-        if ui:
-            app.logs.append(msg)
+    def _log(msg, *a, **kw):
+        app.logs.append(msg)
 
     app.speaker = types.SimpleNamespace(say=app.said.append)
     app.log = _log
@@ -301,79 +298,47 @@ def sec_bell():
     check("铃铛:两处都有时分开认(才判得出「不一致」)",
           d == ("西梁女国", 28, 42) and t == ("建邺城", 15, 122), f"{d} {t}")
 
-    # 大字面(整窗)读数供值的统计口径:**临时**加的一条纯函数(量完可以删)——
-    # 同一段文字是哪条文法认出来的,按 scan_bell_parts 的先后顺序试。
-    check("铃铛:bell_form 认得出五条文法各自的来源(只给统计用)",
-          tools_bell.bell_form(
-              "我发现它的踪迹在西梁女国(28,42),少侠们过去看看吧。")
-          == "对话框·踪迹在"
-          and tools_bell.bell_form("去建邺城(101,127)使用招魂帖,然后妖魔就会到来。")
-          == "对话框·去X使用"
-          and tools_bell.bell_form("◆蛊虫发现妖魔在宝象国(99,54),快去降服他吧。")
-          == "任务栏·有锚点(在/妖魔在)"
-          and tools_bell.bell_form("任务提示:宝象国(99,54)")
-          == "任务栏·无锚点兜底"          # 图名是这六张之一、没锚点:老写法兜底
-          and tools_bell.bell_form("去建邮城(101,127)找掌柜")
-          == "对话框·无锚点兜底"          # 图名读花了 -> 只有最后那条兜得住
-          and tools_bell.bell_form("今天天气不错,适合出门。") == ""
-          and tools_bell.bell_form("我在东海湾(88,94)等你") == "",
-          f"{tools_bell.bell_form('任务提示:宝象国(99,54)')} | "
-          f"{tools_bell.bell_form('去建邮城(101,127)找掌柜')}")
+    # 整窗那条路删了(2026-10-21,只支持两档分辨率、任务栏框一律来自表):
+    # bell_form / wide 宽窄口径 / 带锚点那条兜底(`_RE_BELL_ANY_ANCHORED`)随之
+    # 删掉 —— 留一条"删干净"的检查,免得哪个名字又悄悄长回来。
+    try:
+        tools_bell.scan_bell_parts([], wide=True)
+        _wide_gone = False
+    except TypeError:
+        _wide_gone = True
+    check("铃铛:整窗口径删干净(wide 参数 / bell_form / 带锚点兜底都不在了)",
+          _wide_gone
+          and not hasattr(tools_bell, "bell_form")
+          and not hasattr(tools_bell, "_RE_BELL_ANY_ANCHORED")
+          and not hasattr(tools_bell, "track_rect")
+          and not hasattr(tools_bell, "hunt_gap")
+          and not hasattr(tools_bell, "_is_hdr")
+          and not hasattr(tools_bell, "HUNT_GAPS")
+          and not hasattr(tools_bell, "TRK_NOHDR_MAX"), "")
 
-    # **大字面(整窗)那一拍只认带虚词锚点的写法**(用户定的 2026-10-16):整窗里混着
-    # 聊天和别的任务的行 —— 聊天里一句「长寿村(50,60)」要是被"光秃秃的图名+坐标"
-    # 那两条兜底认下来,轻则红点乱跳,重则被归到 **dialog**(dialog 是**立刻报**的),
-    # 所以 `_RE_BELL_KNOWN` 和 `_RE_BELL_ANY` 的光秃秃那条在 wide 一拍都不用。
-    # 读红框那一小块(wide=False)照旧容错:图名读花("建邮城"/"宝国")就靠它兜住。
+    # 现在喂进 `scan_bell_parts` 的都是**小块**(对话框文字带 / 表里的任务栏框),
+    # 口径只剩一条:带锚点、没锚点的写法都认(小块里图名读花靠兜底接)。
     _title2 = blk("降妖伏魔", 700, 200)
-    _chat_blk = blk("玩家甲:长寿村(50,60)见,我先去集合了。", 700, 300)
-    _alias_blk = blk("玩家甲:长寿郊外(50,60)见。", 700, 300)     # 别名/读花的图名
-    check("整窗那一拍:聊天里光秃秃的「图名(x,y)」不认(任务栏·无锚点兜底那条收起)",
-          tools_bell.scan_bell_parts([_title2, _chat_blk])[1]
-          == ("长寿村", 50, 60)
-          and tools_bell.scan_bell_parts([_title2, _chat_blk], wide=True)
-          == (None, None, None),
-          f"wide=False {tools_bell.scan_bell_parts([_title2, _chat_blk])} / "
-          f"wide=True {tools_bell.scan_bell_parts([_title2, _chat_blk], wide=True)}")
-    check("整窗那一拍:图名读花/别名那种(**对话框·无锚点兜底**,归 dialog)也不认"
-          " —— 这条必须一起收,不然它会被立刻报出去",
-          tools_bell.scan_bell_parts([_title2, _alias_blk])[0]
-          == ("长寿村", 50, 60)
-          and tools_bell.scan_bell_parts([_title2, _alias_blk], wide=True)
-          == (None, None, None),
-          f"wide=False {tools_bell.scan_bell_parts([_title2, _alias_blk])} / "
-          f"wide=True {tools_bell.scan_bell_parts([_title2, _alias_blk], wide=True)}")
-    check("整窗那一拍:带虚词锚点的写法照旧认(踪迹在 / 去X使用 / 妖魔在 / 去X / 在X处)",
+    check("铃铛:带虚词锚点的写法照旧认(踪迹在 / 去X使用 / 妖魔在 / 去X / 在X处)",
           tools_bell.scan_bell_parts(
-              [blk("我发现它的踪迹在朱紫国(144,99),少侠们速度赶过去吧。", 1, 1)],
-              wide=True)[0] == ("朱紫国", 144, 99)
+              [blk("我发现它的踪迹在朱紫国(144,99),少侠们速度赶过去吧。", 1, 1)]
+          )[0] == ("朱紫国", 144, 99)
           and tools_bell.scan_bell_parts(
-              [blk("去建邺城(101,127)使用招魂帖,然后妖魔就会到来。", 1, 1)],
-              wide=True)[0] == ("建邺城", 101, 127)
+              [blk("去建邺城(101,127)使用招魂帖,然后妖魔就会到来。", 1, 1)]
+          )[0] == ("建邺城", 101, 127)
           and tools_bell.scan_bell_parts(
-              [_title2, blk("◆蛊虫发现妖魔在宝象国(99,54),快去降服他吧。", 700, 300)],
-              wide=True)[1] == ("宝象国", 99, 54)
+              [_title2, blk("◆蛊虫发现妖魔在宝象国(99,54),快去降服他吧。",
+                            700, 300)])[1] == ("宝象国", 99, 54)
           and tools_bell.scan_bell_parts(
-              [_title2, blk("先去朱紫国(12,49)找掌柜", 700, 300)],
-              wide=True)[0] == ("朱紫国", 12, 49)      # 老写法「去X(x,y)」保留
+              [_title2, blk("先去朱紫国(12,49)找掌柜", 700, 300)]
+          )[1] == ("朱紫国", 12, 49)      # 老写法「去X(x,y)」走无锚点兜底(归任务栏)
           and tools_bell.scan_bell_parts(
-              [_title2, blk("在建邺城(15,122)处", 700, 300)],
-              wide=True)[1] == ("建邺城", 15, 122),    # 悬停那行不在这个链条里
+              [_title2, blk("在建邺城(15,122)处", 700, 300)]
+          )[1] == ("建邺城", 15, 122),    # 悬停那行也归任务栏那条
           " | ".join(str(tools_bell.scan_bell_parts(
-              [_title2, blk(t, 700, 300)], wide=True)) for t in (
+              [_title2, blk(t, 700, 300)])) for t in (
               "◆蛊虫发现妖魔在宝象国(99,54),快去降服他吧。",
               "先去朱紫国(12,49)找掌柜", "在建邺城(15,122)处")))
-    check("大字面口径的 bell_form:无锚点那两条不算命中(统计才对得上宽窄两种口径)",
-          tools_bell.bell_form("玩家甲:长寿村(50,60)见,我先去集合了。")
-          == "任务栏·无锚点兜底"
-          and tools_bell.bell_form(
-              "玩家甲:长寿村(50,60)见,我先去集合了。", wide=True) == ""
-          and tools_bell.bell_form("去建邮城(101,127)找掌柜", wide=True)
-          == "对话框·无锚点兜底"          # 带"去"锚点:wide 口径下照旧命中
-          and tools_bell.bell_form("去建邺城(101,127)使用招魂帖。", wide=True)
-          == "对话框·去X使用",
-          f"{tools_bell.bell_form('玩家甲:长寿村(50,60)见,我先去集合了。', wide=True)!r} | "
-          f"{tools_bell.bell_form('去建邮城(101,127)找掌柜', wide=True)!r}")
 
     check("铃铛:自动模式下,任务追踪挂着多个任务只认「降妖伏魔」那段",
           tools_bell.scan_bell([
@@ -420,9 +385,8 @@ def sec_bell():
     # 一个杀怪周期 = 一次"对话框给出图+坐标";周期内只有任务栏给出**新的图+坐标**
     # 才更新;任务栏只写地图没坐标的一律不管(不显示"坐标待定"那种半成品)。
     def _tracker(text):
-        # 真面板里就有「任务追踪」**表头** + 「降妖伏魔」标题:框(`track_rect`)是围着
-        # 表头定的 —— 缺表头就学不到框,而"整窗那一拍只定位、不取值"之后
-        # **没有框就永远拿不到值**(用户定的 2026-10-17),所以假任务栏必须给表头。
+        # 真任务栏框里就有「任务追踪」**表头** + 「降妖伏魔」标题(表里的框就是
+        # 围着表头那一块手框的):假任务栏带上它们,和真读数同形。
         return [{"text": "任务追踪", "x1": 700, "y1": 118,
                  "x2": 790, "y2": 138},
                 {"text": "降妖伏魔", "x1": 700, "y1": 145,
@@ -435,7 +399,7 @@ def sec_bell():
     # 假屏得给得出"面板":对话框说的值只走**面板带那条主路**(tools/bell.py 的
     # `dialog_rect` → `panel_box` → `panel_text_cut`),平色图判不出面板,主路就
     # 永远读不到对话框;假 OCR 也按裁剪尺寸分派 —— 宽而矮的那条是对话框的文字带,
-    # 其余(整窗/任务栏那块)是任务栏。对话框内容和任务栏内容分开摆:一个周期里
+    # 其余(任务栏那块)是任务栏。对话框内容和任务栏内容分开摆:一个周期里
     # 变的是哪一个,用例里就改哪一个。
     _KW, _KH = 900, 640
     _kst = {"dlg": [blk("去宝象国(24,51)使用逐妖蛊虫,然后妖魔就会出现。",
@@ -454,6 +418,10 @@ def sec_bell():
     eng_k.bell_tool.regions = lambda: [[0, 0, _KW, _KH]]
     eng_k.screen = PanelShot(_KW, _KH)
     eng_k.ocr.recognize_blocks = _ocr_k
+    # 任务栏框来自分辨率表(900x640 不在表里):直接种一个框进去,后面"任务栏
+    # 给出新坐标"那条用例才读得到任务栏。
+    eng_k.bell_tool._slot[1] = tools_bell.SlotState(
+        region=(0, 0, _KW, _KH), trk=[620, 193, 880, 390])
     eng_k._safe("cycle", True)
     check("周期:对话框给图+坐标 -> 直接定目标",
           eng_k.bell_tool.spot == ("宝象国", 24, 51)
@@ -461,8 +429,8 @@ def sec_bell():
           str(eng_k.bell_tool.spot))
     eng_k._safe("cycle", True)
     check("周期:同一条提示不重复记",
-          len([m for m, _ in app_k.logs_all if "妖魔位置" in m]) == 1,
-          str([m for m, _ in app_k.logs_all if "妖魔位置" in m]))
+          len([m for m in app_k.logs if "妖魔位置" in m]) == 1,
+          str([m for m in app_k.logs if "妖魔位置" in m]))
     _kst["trk"] = _tracker("去建邺城找巧智魔。剩余时间2小时。")
     eng_k._safe("cycle", True)
     check("周期:任务栏只写地图、没坐标 -> 不动(不显示坐标待定)",
@@ -487,9 +455,9 @@ def sec_bell():
     _kst["trk"] = _tracker("去西梁女国找梦魇魔。剩余时间2小时。")
     eng_k._safe("cycle", True)
     check("周期:梦魇魔这种不读任务栏(任务栏里换什么坐标都不理)",
-          eng_k.bell_tool._slot[1].get("trk_mode") == "none"
+          eng_k.bell_tool._slot[1].trk_mode == "none"
           and eng_k.bell_tool.spot == ("傲来国", 30, 53),
-          f"{eng_k.bell_tool._slot[1].get('trk_mode')} "
+          f"{eng_k.bell_tool._slot[1].trk_mode} "
           f"{eng_k.bell_tool.spot}")
 
     # OCR 把坐标分隔符认错/吃掉:真机日志里"（93.31）""（69101）""（107.146）"
@@ -617,7 +585,7 @@ def sec_bell():
 
 
 
-    # ---- 快路/慢路:不整窗扫也能认出目标(用户两条红线:准 + 快) ----
+    # ---- 快路:框来自分辨率表,只扫那一小块(用户两条红线:准 + 快) ----
     # 合成一张"游戏窗口":亮底 + 可开关的对话框面板;扫哪块、扫到什么都由这里定。
     BG_C = (200, 120, 60)            # 亮且彩的"游戏世界"
 
@@ -666,25 +634,24 @@ def sec_bell():
     TRK_BLK = blk("◆蛊虫发现妖魔在宝象国(99,54),快去降服他吧。", 700, 225)
     calls = []
 
+    _BOX = [620, 193, 880, 390]     # 默认种进去的"表框"(相对窗口;宽 < 500)
+
     def seed_state(region, trk=None, mode="item"):
-        """种一份扫描状态(学到的框 + 本周期任务类型)进去。
+        """种一份扫描状态(表里的任务栏框 + 本周期任务类型)进去。
 
-        2026-10-16 之后:任务栏坐标不进分辨率表、**任务类型只由对话框给**,所以
-        "跟这两种来源无关"的用例(任务栏怎么读、悬停怎么触发、空读怎么办、整窗
-        怎么定位框…)直接摆一份状态,一直在"有框 + 类型已知"这条路上跑;两种来源
-        本身各有专门用例盯着(见"类型只由对话框决定"那组)。
-        `mode` 默认 "item":等价于"对话框已经说过这轮是逐妖蛊虫"。
+        框一律来自分辨率表、**任务类型只由对话框给**,所以"跟这两种来源无关"的
+        用例(任务栏怎么读、悬停怎么触发、空读怎么办)直接摆一份状态,一直在
+        "有框 + 类型已知"这条路上跑;两种来源本身各有专门用例盯着(见"类型只由
+        对话框决定"那组)。`mode` 默认 "item":等价于"对话框已经说过这轮是逐妖蛊虫"。
         """
-        return {"region": tuple(region), "trk": (list(trk) if trk else None),
-                "miss": 0, "trk_nohdr": 0, "dlg_pend": None, "trk_last": None,
-                "dlg_raw": None, "trk_mode": mode}
+        return tools_bell.SlotState(
+            region=tuple(region), trk=(list(trk) if trk else None),
+            trk_mode=tools_bell.TrkMode(mode))
 
-    # 对话框那边现在只读"面板里有字的那一截"(宽、矮),所以按宽高区分三类
+    # 对话框那边现在只读"面板里有字的那一截"(宽、矮),所以按宽高区分两类
     def ocr_of(img, **kw):
-        h, w = img.shape[:2]
+        w, h = img.shape[1], img.shape[0]
         calls.append((w, h))
-        if h == win.h:                        # 整窗
-            return [HDR, TITLE, TRK_BLK] + ([DLG_BLK] if win.dialog else [])
         if w > 500:                           # 对话框的文字带
             if not win.dialog:
                 return []
@@ -699,7 +666,7 @@ def sec_bell():
     app_f = types.SimpleNamespace(
         cfg=core.split_config({
                                "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app_f.logs.append(m))
+        logs=[], log=lambda m, **kw: app_f.logs.append(m))
     core.find_client_windows = lambda w=win.w, h=win.h: (
         [("梦幻西游 ONLINE", [0, 0, w, h])], [])
     tool_f = tools_bell.BellTool(
@@ -708,62 +675,18 @@ def sec_bell():
     # 类型只由对话框给 —— 这一组盯的是"任务栏那块怎么读/悬停怎么触发",所以先种
     # 一个 item 进去(等价于"对话框已经说过这轮是逐妖蛊虫"),之后每个新周期的类型
     # 由 DLG_BLK/DLG_BLK2(**逐妖蛊虫**文案)那两行定 ✓
-    tool_f._slot[1] = seed_state(win.rect)
-    tool_f.tick(force=True)                   # 第一轮:没学过框 -> 整窗扫一次(只定位)
-    check("快路:第一轮整窗扫 + 学到任务栏那块框(不靠用户拖)",
-          any("整窗" in m and "学到任务栏框" in m for m in app_f.logs)
-          and tool_f.ui_state()["spot"] is None,
-          " | ".join(app_f.logs[-2:]))
-    # **整窗那一拍不取值**(用户定的 2026-10-17):它只负责定位任务栏 ——
-    # 值要等"有框"之后那一小块读出来才算。
-    tool_f._ts = 0.0
-    tool_f.tick(force=True)                   # 有框了:读那一小块,这一拍才取值
-    check("快路:整窗只定位、不取值;有框之后读那一小块才报出来",
-          tool_f.ui_state()["spot"] == ("宝象国", 99, 54),
+    tool_f._slot[1] = seed_state(win.rect, trk=_BOX)
+    tool_f.tick(force=True)                   # 第一拍:读表框那一小块,当轮就报
+    check("快路:框来自表,第一拍只扫那一小块就把目标报出来(没有整窗/学框那一拍)",
+          tool_f.ui_state()["spot"] == ("宝象国", 99, 54)
+          and not any("整窗" in m or "学到任务栏框" in m for m in app_f.logs),
           f"spot={tool_f.ui_state()['spot']} | "
           + " | ".join(app_f.logs[-2:]))
-    # 第一轮这一拍读的就是**整窗**(还没学到框):大字面供值的统计行该在这儿留下
-    # —— **临时**(量完可以删),只进 bell.log(ui=False),界面上不刷。
-    wide = [m for m in app_f.logs if "大字面供值" in m]
-    check("大字面供值:整窗那一拍供出的值在日志里留一行(带命中的文法)",
-          len(wide) >= 1
-          and all(m.startswith("[铃铛]大字面供值: 宝象国 (99,54)[机制=")
-                  and "机制=?" not in m for m in wide),
-          " | ".join(wide) or "日志里没有大字面供值那行")
 
-    # 整窗那一拍把"光秃秃的图名+坐标"挡下来时,bell.log 里也要留一条可统计的行
-    # (用户拿它量一轮:挡下几次、本该是哪条文法命中的)。这里往整窗那块塞一句
-    # 聊天性质的坐标 —— wide 那一拍照旧什么都不认,但宽口径下它本该是
-    # 「任务栏·无锚点兜底」,所以那一行会出现;而且**不许**报出去。
-    win3 = Win()
-    chat3 = blk("玩家甲:长寿村(50,60)见,我先去集合了。", 700, 300)
-
-    def ocr_chat(img, **kw):
-        return [HDR, TITLE, chat3] if img.shape[0] == win3.h else []
-
-    app_c = types.SimpleNamespace(
-        cfg=core.split_config({
-                               "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app_c.logs.append(m))
-    tool_c = tools_bell.BellTool(
-        app_c, lambda: win3,
-        lambda: types.SimpleNamespace(recognize_blocks=ocr_chat))
-    tool_c._slot[1] = seed_state(win3.rect)   # 类型:当"对话框说过逐妖蛊虫"算
-    tool_c.tick(force=True)                   # 没框:这一拍就是整窗读
-    blocked = [m for m in app_c.logs if "已被 wide 规则挡下" in m]
-    check("整窗那一拍:被 wide 规则挡下的值留一行日志(带上本该命中的文法)",
-          len(blocked) == 1
-          and blocked[0].startswith(
-              "[铃铛]大字面供值: 长寿村 (50,60)[机制=任务栏·无锚点兜底")
-          and tool_c.ui_state()["spot"] is None
-          and not any("妖魔位置" in m for m in app_c.logs),
-          f"{blocked} spot={tool_c.ui_state()['spot']}")
-    tool_f._ts = 0.0
-    tool_f.tick(force=False)                  # 新学到的框第一次读:记下签名
     calls.clear()
     tool_f._ts = 0.0
     tool_f.tick(force=False)                  # 什么都没变:一次 OCR 都不该有
-    check("快路:画面没变的一轮,一次 OCR 都不做(整窗那 0.4s 省掉)",
+    check("快路:画面没变的一轮,一次 OCR 都不做(省下的就是那一两百毫秒)",
           calls == [], str(calls))
     tool_f._hb = 0.0                          # 心跳 10 秒一条,这里催它发一次
     tool_f._ts = 0.0
@@ -779,7 +702,7 @@ def sec_bell():
     t0 = time.time()
     tool_f.tick(force=False)
     dt = (time.time() - t0) * 1000
-    check("快路:对话框一出现就当轮报出目标(不用等任务栏/整窗那两块)",
+    check("快路:对话框一出现就当轮报出目标(不用等任务栏那块)",
           tool_f.ui_state()["spot"] == ("西梁女国", 28, 42)
           and [c for c in calls if c[0] > 500 and c[1] != win.h]
           and not [c for c in calls if c[1] == win.h],
@@ -830,7 +753,7 @@ def sec_bell():
     # 鼠标挪到面板文字行上,原来"必须压在框里"太严,实测漏了好几次
     tools_bell.cursor_pos = lambda: (950, 300)     # 框是 (682,182,,-362) 右边一点
     # 距上次读 0.6 秒(逐妖蛊虫盯着第二个坐标是 0.5s 一拍):该读了
-    tool_f._slot[1]["trk_ts"] = time.time() - 0.6
+    tool_f._slot[1].trk_ts = time.time() - 0.6
     calls.clear()
     tool_f._ts = 0.0
     tool_f.tick(force=False)
@@ -846,8 +769,7 @@ def sec_bell():
     tool_f.tick(force=False)
     # (原来这里还有两条"对话框和任务栏对不上 -> 立刻再扫一次 + 以对话框为准"的
     #  用例。2026-10-16 按用户要求**整套删掉**:现在不需要两处对上了 —— `_scan`
-    #  末尾那段对账 + `st["mismatch"]` + 那两句日志都不在了,整窗也只剩快路里
-    #  "定位/重锚任务栏框"这一处用途。)
+    #  末尾那段对账 + `st["mismatch"]` + 那两句日志都不在了。)
 
     # 对话框"改口"要有证据(用户定的规矩):同一块面板两次读出不一样的值时,后面
     # 那个不许直接覆盖 —— 先不报、立刻重扫;重扫回来还是它才算纠正。
@@ -889,7 +811,7 @@ def sec_bell():
     # (该盯任务栏的没盯 -> 漏第二个坐标;反过来只是白读)。
     _frame = tools_bell.rel_rect(win.rect, (0.60, 0.20, 0.95, 0.45))
     _st1 = seed_state(win.rect, trk=_frame, mode="item")
-    _st1["trk_last"] = _st1["trk_stale"] = ("宝象国", 150, 54)   # 上一周期那条读数
+    _st1.trk_last = _st1.trk_stale = ("宝象国", 150, 54)   # 上一周期那条读数
     tool_f._slot[1] = _st1
     tool_f._cycle[1] = tool_f._last[1] = ("宝象国", 150, 54)     # 上一只怪,还没换
     win.dlg_override = [MISREAD]        # 第一遍读花 -> 第二遍读回真值(同一块面板)
@@ -910,7 +832,7 @@ def sec_bell():
     # 单次读出就落红点,正是"两次相同放行"要挡的。现在第二遍只负责核对:这一拍什么都
     # 不报,下一拍会拿 `dlg_text` 重新 pend + 重扫,正确的值只晚 0.15s。
     _st2 = seed_state(win.rect, trk=_frame, mode="item")
-    _st2["trk_last"] = _st2["trk_stale"] = ("宝象国", 150, 54)
+    _st2.trk_last = _st2.trk_stale = ("宝象国", 150, 54)
     tool_f._slot[1] = _st2
     tool_f._cycle[1] = tool_f._last[1] = ("宝象国", 150, 54)
     _spot0 = tool_f.ui_state()["spot"]
@@ -932,7 +854,7 @@ def sec_bell():
     # 世界频道一起读进来"那种**静态行** —— 它长成"图名+坐标"的样子,而且两遍必然读成
     # 一样,"两遍一致"挡不住它(这是唯一一条两遍一致防不住的误报路径)。
     _st3 = seed_state(win.rect, trk=_frame, mode="item")
-    _st3["trk_last"] = _st3["trk_stale"] = ("宝象国", 99, 54)   # 任务栏那行没变
+    _st3.trk_last = _st3.trk_stale = ("宝象国", 99, 54)   # 任务栏那行没变
     tool_f._slot[1] = _st3
     tool_f._cycle[1] = tool_f._last[1] = ("宝象国", 150, 54)
     _spot3 = tool_f.ui_state()["spot"]
@@ -944,60 +866,46 @@ def sec_bell():
     tool_f.tick(force=False)
     check("话术门槛:面板里读到聊天那种「图名+坐标」被挡下(不报、也不进待确认)",
           tool_f.ui_state()["spot"] == _spot3
-          and not tool_f._slot[1].get("dlg_pend")
+          and not tool_f._slot[1].dlg_pend
           and tool_f._stat["dlg_gate"] == _gate0 + 1
           and not any("妖魔位置" in m for m in app_f.logs[n3:]),
           f"spot={tool_f.ui_state()['spot']} "
-          f"pend={tool_f._slot[1].get('dlg_pend')} gate={tool_f._stat['dlg_gate']}")
+          f"pend={tool_f._slot[1].dlg_pend} gate={tool_f._stat['dlg_gate']}")
 
     # 任务栏那块连着读不到字(实测约一半时间是"没显示"):**只记数 + 一条诊断
-    # 日志 —— 永远不作废框、也不整窗**(用户定的 2026-10-16:面板被游戏藏起来是
-    # 正常的,战斗中/切场景时它就不画;作废+重锚一次要耗 8×0.25s ≈ 2 秒,过不了
-    # "快"这条红线)。真机上一趟每轮都整窗扫了 4088 次,吃掉六成时间。
+    # 日志 —— 不动表里那个框**(用户定的 2026-10-16:面板被游戏藏起来是正常的,
+    # 战斗中/切场景时它就不画)。
     win2 = Win()
     calls2 = []
 
     def ocr_blank(img, **kw):
-        h, w = img.shape[:2]
-        calls2.append((w, h))
-        if h == part_h:
-            return []
-        if h == win2.h:
-            return [{"text": "任务追踪", "x1": 700, "y1": 170,
-                     "x2": 790, "y2": 190},
-                    {"text": "降妖伏魔", "x1": 700, "y1": 200,
-                     "x2": 780, "y2": 220},
-                    # 任务类型认成 item(逐妖蛊虫)—— 新规矩下"none 档不碰任务栏",
-                    # 所以"连着读不到字"这条告警只可能在这两类任务里出现
-                    {"text": "去宝象国(24,51)使用逐妖蛊虫,然后妖魔就会出现。",
-                     "x1": 700, "y1": 230, "x2": 1000, "y2": 260}]
+        calls2.append((img.shape[1], img.shape[0]))
         return []                      # 任务栏那一小块一个字都读不到
 
     app_g = types.SimpleNamespace(
         cfg=core.split_config({
                                "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app_g.logs.append(m))
+        logs=[], log=lambda m, **kw: app_g.logs.append(m))
     tool_g = tools_bell.BellTool(
         app_g, lambda: win2,
         lambda: types.SimpleNamespace(recognize_blocks=ocr_blank))
-    tool_g._slot[1] = seed_state(win2.rect)    # 类型:当"对话框说过逐妖蛊虫"算
+    tool_g._slot[1] = seed_state(win2.rect, trk=_BOX)
+    # 类型:当"对话框说过逐妖蛊虫"算
 
     def _tick_g():
         tool_g._ts = 0.0
-        tool_g._slot.setdefault(1, {})["trk_ts"] = 0.0
+        tool_g._slot[1].trk_ts = 0.0
         tool_g.tick(force=False)
 
-    _tick_g()                                  # 没框:先借整窗把框学下来
-    _box0 = tool_g._slot[1].get("trk")
+    _tick_g()                                  # 第一拍:框是表里的,直接读那一小块
+    _box0 = tool_g._slot[1].trk
     _miss = tools_bell.TRK_MISS_MAX
     for _ in range(_miss * 2 + 3):             # 一口气连读 19 次空
         _tick_g()
     _gst = tool_g._slot[1]
-    _full = [c for c in calls2 if c[1] == win2.h]
-    check("空读:连着读不到字只记数(框照旧留着),一次整窗也不做",
-          _box0 is not None and _gst.get("trk") == _box0
-          and len(_full) == 1,               # 只有"没框时学框"那一拍整窗
-          f"框 {_box0} -> {_gst.get('trk')} 整窗 {len(_full)} 次: {_full}")
+    check("空读:连着读不到字只记数,框照旧留着(没有整窗/作废那一说)",
+          _box0 is not None and _gst.trk == _box0,
+          f"框 {_box0} -> {_gst.trk}")
     _diag = [m for m in app_g.logs if "读不到字" in m]
     check("空读:诊断日志说的是「面板没显示、位置照旧留着」(不再说作废/重锚)",
           len(_diag) == 2                    # 19 次空 -> 第 8 / 16 次各一条,不刷屏
@@ -1020,9 +928,6 @@ def sec_bell():
     def ocr7(img, **kw):
         # 按"刚裁的是哪一块"分派(`Win.last`)—— 对话框那条读的是**面板里有字的那一截**
         # (面板框再切一刀,高度不是带子本身),按图片尺寸认会认错。
-        if Win.last == [int(v) for v in win7.rect]:       # 整窗(只用来定位任务栏)
-            return ([HDR, TITLE, STALE7]
-                    + ([blk(dlg7["text"], 100, 430)] if dlg7["text"] else []))
         if Win.last == _band7:                            # 对话框那条带子
             return [blk(dlg7["text"], 100, 430)] if dlg7["text"] else []
         return [HDR, TITLE, STALE7]            # 任务栏那一小块:那条旧行一直挂着
@@ -1030,26 +935,23 @@ def sec_bell():
     app7 = types.SimpleNamespace(
         cfg=core.split_config({
                                "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app7.logs.append(m))
+        logs=[], log=lambda m, **kw: app7.logs.append(m))
     tool7 = tools_bell.BellTool(
         app7, lambda: win7,
         lambda: types.SimpleNamespace(recognize_blocks=ocr7))
-    tool7._slot[1] = seed_state(win7.rect)     # ① 这一轮算逐妖蛊虫(要读任务栏)
+    tool7._slot[1] = seed_state(win7.rect, trk=_BOX)
+    # ① 这一轮算逐妖蛊虫(要读任务栏)
 
     def _tick7():
         tool7._ts = 0.0
-        tool7._slot.setdefault(1, {})["trk_ts"] = 0.0
+        tool7._slot[1].trk_ts = 0.0
         tool7.tick(force=False)
 
     tool7.tick(force=True)                     # ① 任务栏那条先成为本周期目标
     _first7 = tool7.ui_state()["spot"]
-    # **整窗那一拍只定位、不取值**(用户定的 2026-10-17):第一拍学到框、spot 还是空,
-    # 第二拍(读那一小块)才把任务栏那条摆上来。
-    check("新周期:整窗那一拍只定位任务栏、不取值",
-          _first7 is None and tool7._slot[1].get("trk"),
-          f"spot={_first7} 框={tool7._slot[1].get('trk')}")
-    tool7.tick(force=True)
-    _first7 = tool7.ui_state()["spot"]
+    check("新周期:任务栏先给出第一条(读的就是表框那一小块)",
+          _first7 == ("宝象国", 99, 54) and tool7._slot[1].trk,
+          f"spot={_first7} 框={tool7._slot[1].trk}")
     _n7 = len(app7.logs)
     win7.dialog = True                         # ② 对话框开新周期(改口:连读两次)
     dlg7["text"] = NEW7
@@ -1058,13 +960,13 @@ def sec_bell():
     check("新周期:任务栏残留一并清掉(trk_hist/trk_pub/trk_text/dlg_pend)",
           _first7 == ("宝象国", 99, 54)
           and tool7.ui_state()["spot"] == ("西梁女国", 28, 42)
-          and _st7.get("trk_stale") == ("宝象国", 99, 54)   # 旧行:留下来当记号
-          and _st7.get("trk_hist") == [] and _st7.get("trk_pub") is None
-          and _st7.get("trk_text") is None and _st7.get("dlg_pend") is None,
+          and _st7.trk_stale == ("宝象国", 99, 54)   # 旧行:留下来当记号
+          and _st7.trk_hist == [] and _st7.trk_pub is None
+          and _st7.trk_text is None and _st7.dlg_pend is None,
           f"{_first7} -> {tool7.ui_state()['spot']} trk_stale="
-          f"{_st7.get('trk_stale')} hist={_st7.get('trk_hist')} "
-          f"pub={_st7.get('trk_pub')} text={_st7.get('trk_text')} "
-          f"pend={_st7.get('dlg_pend')}")
+          f"{_st7.trk_stale} hist={_st7.trk_hist} "
+          f"pub={_st7.trk_pub} text={_st7.trk_text} "
+          f"pend={_st7.dlg_pend}")
     for _ in range(3):                         # ③ 那条旧行还挂着,连读几次
         _tick7()
     check("新周期:任务栏那条旧行不许把红点翻回旧坐标(trk_stale 挡住)",
@@ -1075,229 +977,33 @@ def sec_bell():
           f"spot={tool7.ui_state()['spot']} | "
           + " | ".join(m for m in app7.logs[_n7:])[:200])
 
-    # 用户定的新规矩(2026-10-16,阈值 2026-10-17 从 2 放宽到 4):**有红框时框里读到了
-    # 字、却没有「任务追踪」表头** -> 连着 `TRK_NOHDR_MAX` 次就认定任务栏被玩家拖走了
-    # (框是位置记忆,拖走之后它一直指着旧地方,读回来的是身后的场景文字):把框作废 ->
-    # **下一拍**快路走"还没有框"那一支,读整窗重锚(整窗只剩这一处用途,同一段代码)。
-    # 判据必须落在"读到了字"上:一个字都没读到是"面板被藏起来了"(见上面那条)。
-    # 放宽的理由有实测:面板被战斗藏起来时框里读到的是战斗 UI 的字,连 2 拍就误作废,
-    # 接着 12 秒整窗扫了 7 次(约 3.2 秒白烧),而面板回原位只差 3px。
-    win6 = Win()
-    calls6 = []
-    _n6 = tools_bell.TRK_NOHDR_MAX
-    st6 = {"wrong": _n6 + 1}    # 前几拍读红框:"框"还指着拖走前的老地方
-
-    def ocr_moved(img, **kw):
-        h, w = img.shape[:2]
-        calls6.append((w, h))
-        if h == win6.h:                        # 整窗:扫整窗总能找到表头
-            return [HDR, TITLE, TRK_BLK]
-        if w > 500:                            # 对话框那条带(面板没开)
-            return []
-        if st6["wrong"] > 0:                   # 红框那块:有字、但没有表头
-            st6["wrong"] -= 1
-            return [blk("东海湾 打捞珍珠", 60, 30)]
-        return [HDR, TITLE, TRK_BLK]           # 重锚之后框又指着任务栏了
-
-    app_i = types.SimpleNamespace(
-        cfg=core.split_config({
-                               "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app_i.logs.append(m))
-    tool_i = tools_bell.BellTool(
-        app_i, lambda: win6,
-        lambda: types.SimpleNamespace(recognize_blocks=ocr_moved))
-    tool_i._slot[1] = seed_state(win6.rect)    # 类型:当"对话框说过逐妖蛊虫"算
-    tool_i._ts = 0.0
-    tool_i.tick(force=False)                   # 先学到一个框(没框时那一拍扫整窗)
-    calls6.clear()
-    _full6 = []
-    for _ in range(_n6):                       # 连着 `TRK_NOHDR_MAX` 拍"有字没表头"
-        tool_i._slot[1]["trk_ts"] = 0.0
-        tool_i._ts = 0.0
-        tool_i.tick(force=False)
-        _full6.append([c for c in calls6 if c[1] == win6.h])
-        calls6.clear()
-    _mid6 = tool_i._slot[1].get("trk")
-    tool_i._slot[1]["trk_ts"] = 0.0
-    tool_i._ts = 0.0
-    tool_i.tick(force=False)                   # 下一拍:快路读整窗重锚,学回框
-    after6 = [c for c in calls6 if c[1] == win6.h]
-    check(f"规矩:框里连着 {_n6} 次没读到「任务追踪」表头 -> 作废框,"
-          "下一拍整窗重锚一次(被拖走了)",
-          not any(_full6) and _mid6 is None and len(after6) == 1
-          and tool_i._slot[1].get("trk") is not None
-          and any("没读到「任务追踪」表头" in m and "整窗重锚" in m
-                  for m in app_i.logs),
-          f"前{_n6}拍整窗{_full6} 中间框={_mid6} 下一拍{after6} | "
-          + " | ".join(app_i.logs[-2:]))
-    calls6.clear()
-    for _ in range(4):                         # 重锚之后:框又指着任务栏了
-        tool_i._slot[1]["trk_ts"] = 0.0
-        tool_i._ts = 0.0
-        tool_i.tick(force=False)
-    left6 = [c for c in calls6 if c[1] == win6.h]
-    check("规矩:重锚之后接着几拍不再整窗扫(计数归零,不是每拍都扫)",
-          not left6, f"4 拍里整窗扫了 {left6}")
-
-    # 用户定的规矩:整窗只在 ①还没框去定位 ②框里连着读不到东西(作废后重锚)
-    # 时发生 —— **"每 20 秒兜底整窗一次"那条早就删了**(其余时间一律不整窗)。
-    calls6.clear()
-    for _ in range(6):
-        tool_i._slot[1]["trk_ts"] = 0.0
-        tool_i._ts = 0.0
-        tool_i.tick(force=False)
-    left6 = [c for c in calls6 if c[1] == win6.h]
-    check("规矩:没有「每 20 秒兜底整窗一次」了(其余时间一律不整窗)",
-          left6 == [] and not hasattr(tools_bell, "FULL_GAP"),
-          f"6 拍里整窗扫了 {left6}")
-
-    # 用户定的规矩:还没有红框时**扫整窗去找**(0.25s 节流),定位到之后只扫红框
-    # —— 原来"没框就按窗口比例猜一块(TRK_DEFAULT)",任务栏在游戏里能随便拖,
-    # 猜出来的位置没有依据
-    win4 = Win()
-    calls4 = []
-
-    def ocr_box(img, **kw):
-        h, w = img.shape[:2]
-        calls4.append((w, h))
-        if h == win4.h:                        # 整窗:找「任务追踪」表头那一下
-            return [HDR, TITLE, TRK_BLK]
-        if w > 500:                            # 对话框那条带(这里没开面板)
-            return []
-        return [TRK_BLK]                       # 红框那块
-
-    tool_h = tools_bell.BellTool(
-        types.SimpleNamespace(
-            cfg=core.split_config({}),
-            log=lambda m, ui=True, detail="", **kw: None),
-        lambda: win4, lambda: types.SimpleNamespace(recognize_blocks=ocr_box))
-    tool_h._slot[1] = seed_state(win4.rect)    # 类型:当"对话框说过逐妖蛊虫"算
-    tool_h._ts = 0.0
-    tool_h.tick(force=False)                   # 没框:这一拍该读整窗
-    first_full = [c for c in calls4 if c[1] == win4.h]
-    learned = tool_h._slot[1].get("trk")
-    calls4.clear()
-    tool_h._slot[1]["trk_ts"] = 0.0
-    tool_h._ts = 0.0
-    tool_h.tick(force=False)                   # 有框了:只扫红框
-    check("规矩:没红框就先扫整窗找框,定位到之后只扫红框(不再整窗)",
-          bool(first_full) and learned is not None
-          and not [c for c in calls4 if c[1] == win4.h],
-          f"第一轮 {first_full} 学到{learned} 之后扫了 {calls4}")
-
-    # ③ 没框时"整窗找表头"的节流**逐步放宽**(用户定的 2026-10-16):真机上踩到
-    # region 稍微不含任务栏、或表头一时读不出来 -> 连着十几二十次整窗扫(每次
-    # ~300~470ms,实测一趟 19 次)。档位 0.25 → 0.5 → 1.0 → 2.0(封顶),学到框立刻
-    # 回第一档。计数是 `st["hunt"]`(只数**真的读过**的次数),`miss`/`trk_nohdr` 不碰。
-    check("整窗找框:节流档位 0.25/0.5/1/2/4/8 (连着没找着的次数 -> 间隔)",
-          tools_bell.HUNT_GAPS[0] == tools_bell.TRK_WATCH_GAP
-          and [tools_bell.hunt_gap(n) for n in range(7)]
-          == [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0],
-          str([tools_bell.hunt_gap(n) for n in range(7)]))
-
-    win5 = Win()
-    cnt5 = {"trk": 0}
-    hdr5 = {"has": False}          # 整窗那一拍能不能找到「任务追踪」表头
-
-    def ocr5(img, **kw):
-        h, w = img.shape[:2]
-        # 任务栏那一支:整窗(win5.h)或学到的框(窄,且**高度随 TRK_PAD 变**);
-        # 对话框那条文字带是"宽而矮"(宽 > 500),别把它算进来。
-        if w <= 500 or h == win5.h:
-            cnt5["trk"] += 1
-            return ([HDR, TITLE, TRK_BLK] if hdr5["has"]
-                    else [blk("东海湾 打捞珍珠", 700, 300)])   # 有字,但没有表头
-        return []
-
-    app5 = types.SimpleNamespace(
-        cfg=core.split_config({
-                               "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app5.logs.append(m))
-    tool5 = tools_bell.BellTool(
-        app5, lambda: win5,
-        lambda: types.SimpleNamespace(recognize_blocks=ocr5))
-    tool5._slot[1] = seed_state(win5.rect)     # 类型 item、还没有框
-    _reads5 = []
-
-    def _hunt(age):
-        """把"上次整窗读"伪造成 age 秒之前(测试不睡觉),再跑一拍。"""
-        tool5._slot[1]["trk_ts"] = time.time() - age
-        tool5._ts = 0.0
-        tool5.tick(force=False)
-        _reads5.append(cnt5["trk"])
-        return tool5._slot[1].get("hunt")
-
-    _h1 = _hunt(0.3)                           # 档位 0.25:读 -> 没找着,hunt=1
-    _hunt(0.3)                                 # 同一个 0.3s:档位已经 0.5 -> 不读
-    _h2 = _hunt(1.5)                           # 0.5 放行 -> 读,hunt=2
-    _hunt(1.5)                                 # 1.0 放行 -> 读,hunt=3 -> 触发冷却
-    _reads_before = cnt5["trk"]
-    _hunt(1.5)                                 # 冷却中(30s):一拍都不读
-    check("整窗找框:连 TRK_NOHDR 上限的次数都没找着 -> 歇 30 秒(别再烧整窗 OCR)",
-          _h1 == 1 and _h2 == 2 and _reads5 == [1, 1, 2, 3, 3]
-          and tool5._slot[1].get("hunt_pause")
-          and tool5._slot[1].get("hunt") == 0
-          and cnt5["trk"] == _reads_before,
-          f"各拍累计整窗读 {_reads5} hunt={tool5._slot[1].get('hunt')} "
-          f"pause={tool5._slot[1].get('hunt_pause')}")
-    # 冷却过了(30s 之后)再试:表头这会儿出现了 -> 学到框、冷却解除、计数归零
-    hdr5["has"] = True
-    tool5._slot[1]["hunt_pause"] = time.time() - (tools_bell.HUNT_PAUSE + 5)
-    _hunt(3.0)
-    _learned5 = tool5._slot[1].get("trk")
-    _hunt(0.6)                                 # 学到框 -> 计数归零、节奏回 0.5(逐妖蛊虫档)
-    check("整窗找框:冷却过后学到框 -> 冷却解除、计数归零、节流回第一档",
-          _learned5 is not None and tool5._slot[1].get("hunt") == 0
-          and not tool5._slot[1].get("hunt_pause")
-          and _reads5[-1] > _reads5[-2],
-          f"框{_learned5} hunt={tool5._slot[1].get('hunt')} "
-          f"pause={tool5._slot[1].get('hunt_pause')} 各拍 {_reads5}")
-    # 冷却期间:不整窗(2~3 秒),只用"上次那个框"做廉价小读 —— 面板回来了就立刻
-    # 恢复(2026-10-17 实测:面板回来时还在冷却里,白等半分钟,第二坐标就漏了)
-    tool5._slot[1]["trk"] = None
-    tool5._slot[1]["trk_hint"] = [571, 174, 815, 390]
-    tool5._slot[1]["hunt_pause"] = time.time()
-    tool5._slot[1]["hint_ts"] = 0.0
-    hdr5["has"] = True                         # 面板回来了
-    _n_before = cnt5["trk"]
-    _hunt(1.0)
-    check("整窗找框:冷却里面板回来了 -> 一次廉价小读就恢复、冷却解除",
-          tool5._slot[1].get("trk") == [571, 174, 815, 390]
-          and not tool5._slot[1].get("hunt_pause")
-          and cnt5["trk"] == _n_before + 1,
-          f"框={tool5._slot[1].get('trk')} "
-          f"pause={tool5._slot[1].get('hunt_pause')} 读={cnt5['trk']}"
-          f"(前 {_n_before})")
-
-    # **表里量过的框不作废、也不整窗**(用户 2026-10-17:这个尺寸只扫那一块)——
-    # 读到的字没表头时不再判"被拖走",那 2~3 秒的整窗重锚就是"卡死"的来源。
+    # 框来自表,不再有"作废/重锚":框里读到别处的字(面板被战斗藏住的样子)
+    # 也**不动表里那个框**。
     win8 = Win()
     calls8 = []
 
     def ocr8(img, **kw):
-        h, w = img.shape[:2]
-        calls8.append((w, h))
-        return [blk("东海湾 打捞珍珠", 60, 30)]   # 有字、没表头(面板被藏住的样子)
+        calls8.append((img.shape[1], img.shape[0]))
+        return [blk("东海湾 打捞珍珠", 60, 30)]   # 有字、但不是任务栏的内容
 
     app8 = types.SimpleNamespace(
         cfg=core.split_config({
                                "active_tool": "bell"}),
-        logs=[], log=lambda m, ui=True, detail="", **kw: app8.logs.append(m))
+        logs=[], log=lambda m, **kw: app8.logs.append(m))
     tool8 = tools_bell.BellTool(
         app8, lambda: win8,
         lambda: types.SimpleNamespace(recognize_blocks=ocr8))
     tool8._slot[1] = seed_state(win8.rect, trk=[620, 193, 900, 492])
-    tool8._slot[1]["trk_fixed"] = True
-    _keep8 = list(tool8._slot[1]["trk"])
-    for _ in range(tools_bell.TRK_NOHDR_MAX + 2):
-        tool8._slot[1]["trk_ts"] = 0.0
+    _keep8 = list(tool8._slot[1].trk)
+    for _ in range(6):
+        tool8._slot[1].trk_ts = 0.0
         tool8._ts = 0.0
         tool8.tick(force=False)
-    check("分辨率表:表里量过的任务栏框不作废、不整窗(只扫那一块)",
-          tool8._slot[1].get("trk") == _keep8
+    check("分辨率表:框里读到别处的字也不动表里那个框(不整窗、不作废)",
+          tool8._slot[1].trk == _keep8
           and not [c for c in calls8 if c[1] == win8.h]
           and not any("作废" in m for m in app8.logs),
-          f"框={tool8._slot[1].get('trk')} "
+          f"框={tool8._slot[1].trk} "
           f"整窗={[c for c in calls8 if c[1] == win8.h]}")
 
     # 纯函数:门控判据与"学到的那块框"
@@ -1315,8 +1021,7 @@ def sec_bell():
           and tools_bell.confirmed([None, "A", None, "A"]) == "A"
           and tools_bell.confirmed([]) is None)
     check("面板:又宽又矮的暗横条不算对话框(真机实测误判都是 800x50~150)",
-          tools_bell.DIALOG_MIN_H >= tools_bell.TRK_MARGIN
-          and tools_bell.panel_box(
+          tools_bell.panel_box(
               np.concatenate([
                   np.full((60, 900, 3), 30, np.uint8),      # 又宽又矮的暗条
                   np.full((300, 900, 3), 200, np.uint8)])) is None
@@ -1357,8 +1062,8 @@ def sec_bell():
           tools_bell.rel_rect([100, 200, 900, 600], (0.0, 0.0, 0.5, 0.5))
           == [100, 200, 500, 400])
     check("过程日志:没认到时把读到的字也带上(排查时最想知道的就是这个)",
-          tools_bell.read_note("整窗", (800, 600), 12, 321.4, None)
-          == "整窗 800x600 块12 321ms → 一个字都没读到"
+          tools_bell.read_note("任务栏", (800, 600), 12, 321.4, None)
+          == "任务栏 800x600 块12 321ms → 一个字都没读到"
           and tools_bell.read_note("任务栏", (330, 180), 3, 99.6, None,
                                    [{"text": "去建邺城找巧智魔"}])
           == "任务栏 330x180 块3 100ms → 没认到(去建邺城找巧智魔)"
@@ -1473,9 +1178,8 @@ def sec_bell():
               "去西梁女国找迷幻妖。剩余时间2小时。")))
     check("任务栏节奏:逐妖蛊虫 0.5s / 悬停 0.25s / 认类型 0.6s / 没显示 1.0s",
           tools_bell.TRK_ITEM_GAP == 0.5
-          and tools_bell.TRK_WATCH_GAP == 0.25
           and tools_bell.HOVER_GAP == 0.25
-          and tools_bell.TRK_WATCH_GAP < tools_bell.TRK_ITEM_GAP
+          and tools_bell.HOVER_GAP < tools_bell.TRK_ITEM_GAP
           < tools_bell.TRK_GAP < tools_bell.TRK_GAP_IDLE)
 
     # ---- 类型**只由对话框**决定(用户定的 2026-10-16) ----
@@ -1485,9 +1189,9 @@ def sec_bell():
     def _type_case(dlg_text, trk_text):
         """对话框写着 dlg_text、任务栏那块写着 trk_text:跑两拍,回(类型, 任务栏读几次)。
 
-        哪块是哪块按"**刚裁的是哪一块**"认(`Win.last`)—— 别再按图片尺寸猜:对话框
-        那条读的是"面板里有字的那一截"(面板框还要再切一刀),而任务栏那一小块的真实
-        高度是 `PANEL_H + TRK_PAD` ≈ 216(悬停那块还要往上加 `HOVER_LIFT`)。
+        哪块是哪块按"**刚裁的是哪一块**"认(`Win.last`)—— 对话框那条读的是
+        "面板里有字的那一截"(面板框还要再切一刀);任务栏读的是表框那一小块
+        (悬停那拍还要往上加 `HOVER_LIFT`)。
         """
         w9 = Win()
         cnt9 = {"trk": 0}
@@ -1496,22 +1200,25 @@ def sec_bell():
         def ocr9(img, **kw):
             if Win.last == _band9:             # 对话框条带
                 return [blk(dlg_text, 100, 430)] if dlg_text else []
-            cnt9["trk"] += 1                   # 整窗那一拍 + 任务栏那一小块(含悬停加高)
+            cnt9["trk"] += 1                   # 任务栏那一小块(含悬停加高的那拍)
             return [HDR, TITLE, blk(trk_text, 700, 300)]
 
         app9 = types.SimpleNamespace(
             cfg=core.split_config({
                                    "active_tool": "bell"}),
-            logs=[], log=lambda m, ui=True, detail="", **kw: app9.logs.append(m))
+            logs=[], log=lambda m, **kw: app9.logs.append(m))
         tool9 = tools_bell.BellTool(
             app9, lambda: w9,
             lambda: types.SimpleNamespace(recognize_blocks=ocr9))
+        tool9._slot[1] = seed_state(w9.rect, trk=_BOX, mode="none")
+        # 初始态:对话框还没说过类型(none)—— 类型由下面两拍里的对话框给
         w9.dialog = True                   # 面板开着:对话框那条主路读得到
-        for _ in range(2):
-            tool9._ts = 0.0
-            tool9._slot.setdefault(1, {})["trk_ts"] = 0.0
-            tool9.tick(force=False)
-        return tool9._slot[1].get("trk_mode"), cnt9["trk"], tool9.spot
+        with patch(mods=(tools_bell,), cursor_pos=lambda: (700, 300)):
+            for _ in range(2):
+                tool9._ts = 0.0
+                tool9._slot[1].trk_ts = 0.0
+                tool9.tick(force=False)
+        return tool9._slot[1].trk_mode, cnt9["trk"], tool9.spot
 
     _c = _type_case("", "◆蛊虫发现妖魔在宝象国(150,54),快去降服他吧。")
     check("类型只由对话框:还没开过周期(默认 none)-> 任务栏一次都不读",
@@ -1558,23 +1265,20 @@ def sec_bell():
 
     _dband2 = tools_bell.rel_rect(_reg2, tools_bell.DIALOG_BAND)   # 对话框那条带子
 
-    # 这一组的用例都在"**已经有框**"这条路上跑。2026-10-16 之后分辨率表里不再存
-    # 任务栏坐标(表里只有 dlg),所以框不再靠 `layout_for` 桩喂 —— 由下面
-    # `_bell_tool` 直接种一个"**学到的**框"进去(和 `_scan` 里那个 st 初始化同形),
-    # 假 OCR 仍按裁剪尺寸区分「任务栏那块 / 对话框条带」。真正验"没框先扫整窗"的
-    # 是下面 `Win` 那一组的用例。
+    # 这一组的用例都在"**已经有框**"这条路上跑(框一律来自分辨率表):由下面
+    # `_bell_tool` 直接种一个表框进去(和 `_scan` 里那个 st 初始化同形),假 OCR
+    # 仍按裁剪尺寸区分「任务栏那块 / 对话框条带」。
     _tr2 = [620, 193, 1000, 492]                       # 相对 _reg2 的任务栏框
     _tshape = (_tr2[3] - _tr2[1], _tr2[2] - _tr2[0])   # 裁出来是 (299, 380)
 
     def _bell_tool(bell_cfg, ocr):
         tool = tools_bell.BellTool(
             types.SimpleNamespace(cfg={"bell": bell_cfg},
-                                  log=lambda m, ui=True, detail="", **kw: None),
+                                  log=lambda m, **kw: None),
             _Shot, lambda: types.SimpleNamespace(recognize_blocks=ocr))
         tool.regions = lambda: [list(_reg2)]     # 桩里没有真客户端窗口
-        tool._slot[1] = {
-            "region": tuple(_reg2), "trk": list(_tr2), "miss": 0,
-            "trk_nohdr": 0, "dlg_pend": None, "trk_last": None}
+        tool._slot[1] = tools_bell.SlotState(
+            region=tuple(_reg2), trk=list(_tr2))
         return tool
 
     with patch(mods=(tools_bell,), cursor_pos=lambda: None):
@@ -1585,8 +1289,7 @@ def sec_bell():
         def _ocr_m(img, **kw):
             if img.shape[:2] == _tshape:
                 _cnt["trk"] += 1
-                # 真任务栏面板里就带「任务追踪」表头(框就是围着它定的):带上它,
-                # 免得被"有字没表头=被拖走"那条作废掉
+                # 真任务栏面板里就带「任务追踪」表头(表里的框就是围着它手框的)
                 return [HDR, blk(_meng["trk"], 60, 30)]
             return [blk("我发现它的踪迹在西梁女国(28,42),"
                         "少侠们准备好了就过去看看吧。", 60, 30)]
@@ -1602,10 +1305,10 @@ def sec_bell():
             _mt._ts = 0.0
             _mt.tick(force=False)
         check("梦魇魔这类:认过一次类型之后,任务栏一次都不再读",
-              _mst.get("trk_mode") == "none"
+              _mst.trk_mode == "none"
               and _mt.spot == ("西梁女国", 28, 42)
               and _cnt["trk"] == _cnt0,
-              f"{_mst.get('trk_mode')} {_mt.spot} 任务栏OCR {_cnt0}->"
+              f"{_mst.trk_mode} {_mt.spot} 任务栏OCR {_cnt0}->"
               f"{_cnt['trk']}")
 
         # ②逐妖蛊虫:任务栏开头那条 = 对话框那条(还没用道具)-> 不能拿它当
@@ -1624,9 +1327,9 @@ def sec_bell():
             _gt.tick(force=True)
         _gst = _gt._slot[1]
         check("逐妖蛊虫:任务栏还没换(还是对话框那条)-> 一直盯着,不提前收手",
-              _gst.get("trk_mode") == "item"
+              _gst.trk_mode == "item"
               and _gt.spot == ("宝象国", 24, 51),
-              f"{_gst.get('trk_mode')} {_gt.spot}")
+              f"{_gst.trk_mode} {_gt.spot}")
         _gu["trk"] = "◆蛊虫发现妖魔在建邺城(15,122),快去降服他吧。"
         _gd["text"] = ""                       # 这时候玩家已经把对话框点掉了
         for _ in range(3):
@@ -1634,9 +1337,9 @@ def sec_bell():
             _gt.tick(force=True)
         check("逐妖蛊虫:任务栏换出新坐标 -> 报出来、连读两次后收手(不再空转)",
               _gt.spot == ("建邺城", 15, 122)
-              and _gst.get("trk_pub") == ("建邺城", 15, 122)
-              and _gst.get("trk_mode") == "none",
-              f"{_gt.spot} {_gst.get('trk_mode')} {_gst.get('trk_pub')}")
+              and _gst.trk_pub == ("建邺城", 15, 122)
+              and _gst.trk_mode == "none",
+              f"{_gt.spot} {_gst.trk_mode} {_gst.trk_pub}")
 
         # ③任务栏那个值必须**自己**出现过两次才算数(原来把 confirmed() 当布尔用、
         #   报的却是最新那次读数 —— "历史里有个稳定值"就放行一次单发读花;实测
@@ -1656,15 +1359,15 @@ def sec_bell():
         _wt = _bell_tool({}, _ocr_sw)
         for _ in range(3):                    # 认类型(item),任务栏那句也读稳两次
             _wt._ts = 0.0
-            _wt._slot.setdefault(1, {})["trk_ts"] = 0.0
+            _wt._slot[1].trk_ts = 0.0
             _wt.tick(force=False)
         check("逐妖蛊虫:任务栏开头那条 = 对话框那条 -> 不当成新目标(也不收手)",
               _wt.spot == ("宝象国", 150, 54)
-              and _wt._slot[1].get("trk_mode") == "item",
-              f"{_wt.spot} {_wt._slot[1].get('trk_mode')}")
+              and _wt._slot[1].trk_mode == "item",
+              f"{_wt.spot} {_wt._slot[1].trk_mode}")
         _sw["trk"] = "◆蛊虫发现妖魔在宝象国(118,54)处,快去降服他吧。"  # 读花,还长成悬停那行
         _wt._ts = 0.0
-        _wt._slot[1]["trk_ts"] = 0.0
+        _wt._slot[1].trk_ts = 0.0
         _wt.tick(force=False)
         check("任务栏读花:单发一次不许覆盖(哪怕鼠标压在任务栏上、读成悬停那行的样子)",
               _wt.spot == ("宝象国", 150, 54), str(_wt.spot))
@@ -1688,7 +1391,7 @@ def sec_bell():
             _sct.app.log = lambda m, **kw: _sct_logs.append(m)
             for _ in range(3):
                 _sct._ts = 0.0
-                _sct._slot[1]["trk_ts"] = 0.0
+                _sct._slot[1].trk_ts = 0.0
                 _sct.tick(force=False)
         check("范围:item 档鼠标靠近任务栏也不松开标题圈范围(别的任务的坐标不许进来)",
               _sct.spot == ("宝象国", 24, 51),
@@ -1714,27 +1417,26 @@ def sec_bell():
 
         _ht = _bell_tool({}, _ocr_hw)
         _ht._ts = 0.0
-        _ht._slot.setdefault(1, {})["trk_ts"] = 0.0
+        _ht._slot[1].trk_ts = 0.0
         _ht.tick(force=False)                  # ① 对话框开周期(巧智魔 -> hover)
         _hw["dlg"] = ""                        # ② 玩家把对话框点掉了:第二个坐标本来
         for _ in range(2):                     #    就是鼠标停任务栏才有的,这时面板
             _ht._ts = 0.0                      #    多半已经关了(不关的话,面板里那条
-            _ht._slot[1]["trk_ts"] = 0.0       #    旧坐标会把红点"改口"翻回去)
+            _ht._slot[1].trk_ts = 0.0       #    旧坐标会把红点"改口"翻回去)
             _ht.tick(force=False)
         check("巧智魔/怯弱妖:悬停那行单次读数就认(鼠标压在任务栏上正是它的用法)",
               _ht.spot == ("宝象国", 118, 54)
-              and _ht._slot[1].get("trk_mode") == "none",   # 读到就收手(盯完)
-              f"{_ht.spot} {_ht._slot[1].get('trk_mode')}")
+              and _ht._slot[1].trk_mode == "none",   # 读到就收手(盯完)
+              f"{_ht.spot} {_ht._slot[1].trk_mode}")
 
-        # 悬停档的收手**必须"命中悬停那行"**(用户 2026-10-17 实测踩到):还没学到框 /
-        # 框刚被作废时,任务栏那一支读的是**整窗**,里面就有对话框自己那条「去X(x,y)…」
-        # —— 只看"读到一个坐标"就收手的话,当场就把这轮收掉了,之后鼠标压到任务栏上
-        # 也不再读(真机日志里那一拍是"盯完 → 从整窗学到框 → 识别 整窗"三行同秒)。
+        # 悬停档的收手**必须"命中悬停那行"**(用户 2026-10-17 实测踩到):任务栏
+        # 那行正文「去X(x,y)…」也带坐标,只看"读到一个坐标"就收手的话,鼠标压上去
+        # 才会出现的第二个坐标就再也拿不到了。
         _hw2 = {"dlg": "我发现它的踪迹在宝象国(150,54),去把巧智魔降服了吧。",
                 "trk": "去宝象国(150,54)使用逐妖蛊虫,然后妖魔就会出现。"}
 
         def _ocr_h2(img, **kw):
-            if _Shot.last != _dband2:              # 任务栏那一支(还没框 -> 整窗)
+            if _Shot.last != _dband2:              # 任务栏那一支(表框那一小块)
                 return [HDR, TITLE, blk(_hw2["trk"], 700, 300)]
             return [blk(_hw2["dlg"], 60, 30)]
 
@@ -1743,50 +1445,38 @@ def sec_bell():
             types.SimpleNamespace(
                 cfg={"bell": {}},
                 logs=_h2logs,
-                log=lambda m, ui=True, detail="", **kw: _h2logs.append(m)),
+                log=lambda m, **kw: _h2logs.append(m)),
             _Shot, lambda: types.SimpleNamespace(recognize_blocks=_ocr_h2))
         _h2.regions = lambda: [list(_reg2)]
-        _h2._slot[1] = {"region": tuple(_reg2), "trk": None, "miss": 0,
-                        "trk_nohdr": 0, "dlg_pend": None,
-                        "trk_last": None}
+        _h2._slot[1] = tools_bell.SlotState(
+            region=tuple(_reg2), trk=list(_tr2))
+        tools_bell.cursor_pos = lambda: (_tr2[0] + 30, _tr2[1] + 30)
         _h2._ts = 0.0
         _h2.tick(force=False)                  # ①开周期(hover):这拍提前 return,不读任务栏
         _h2._ts = 0.0
-        _h2._slot[1]["trk_ts"] = 0.0
-        _h2.tick(force=False)                  # ②任务栏那拍:没框 -> 整窗读到「去X(x,y)」
-        check("巧智魔/怯弱妖:整窗读到「去X(x,y)」(不是悬停那行)不许收手",
-              _h2._slot[1].get("trk_mode") == "hover"
+        _h2._slot[1].trk_ts = 0.0
+        _h2.tick(force=False)                  # ②任务栏那拍:读到「去X(x,y)」正文行
+        check("巧智魔/怯弱妖:任务栏读到「去X(x,y)」(不是悬停那行)不许收手",
+              _h2._slot[1].trk_mode == "hover"
               and not any("盯完" in m for m in _h2logs),
-              f"mode={_h2._slot[1].get('trk_mode')} logs={_h2logs}")
-        # ③ 把框作废掉(模拟刚被拖走/重锚那一拍):读到的是**悬停那行**,但这一拍
-        #    没有框 —— 单次认那条路本来就要求 `rect_known`,这拍并不发布这个值,
-        #    所以也不许收手(收了这轮唯一的悬停值就丢了)。
-        _h2._slot[1]["trk"] = None
+              f"mode={_h2._slot[1].trk_mode} logs={_h2logs}")
+        # ③ 换成悬停那行:框一直在(来自表),单次就认 + 收手
         _hw2["trk"] = "在宝象国(118,54)处"      # 这才是悬停那行
         _h2._ts = 0.0
-        _h2._slot[1]["trk_ts"] = 0.0
+        _h2._slot[1].trk_ts = 0.0
         _h2.tick(force=False)
-        check("巧智魔/怯弱妖:没框那拍读到悬停行也不收手(那拍本来就不发布单次值)",
-              _h2._slot[1].get("trk_mode") == "hover"
-              and _h2._slot[1].get("trk") and _h2.spot != ("宝象国", 118, 54),
-              f"mode={_h2._slot[1].get('trk_mode')} "
-              f"框={_h2._slot[1].get('trk')} spot={_h2.spot}")
-        _h2._ts = 0.0
-        _h2._slot[1]["trk_ts"] = 0.0
-        _h2.tick(force=False)                  # ④有框了:悬停那行单次就认 + 收手
-        check("巧智魔/怯弱妖:有框之后读到悬停那行 -> 认它、并收手",
-              _h2._slot[1].get("trk_mode") == "none"
+        check("巧智魔/怯弱妖:读到悬停那行 -> 认它、并收手",
+              _h2._slot[1].trk_mode == "none"
               and _h2.spot == ("宝象国", 118, 54)
               and any("盯完" in m for m in _h2logs),
-              f"mode={_h2._slot[1].get('trk_mode')} spot={_h2.spot}")
+              f"mode={_h2._slot[1].trk_mode} spot={_h2.spot}")
 
-        # ---- 界面日志的短句(用户定的 2026-10-17)----
-        # 界面上要一眼能扫:对话框/任务栏给"类型 + 图名(坐标)",整窗只说定位到没有;
-        # 块数/耗时/读到啥/框多宽这些细节全留在文件里(msg 一个字没变)。
+        # ---- 报出目标那一行(小窗没有日志区,这就只是文件日志里的结论行)----
+        # 对话框/任务栏认下坐标后各报一条;块数/耗时/读到啥在各自的读数行里。
         _ui9 = {"dlg": "又一个！这次是一只精巧的巧智魔。它足智多谋而且狡猾无比。"
                        "我发现它的踪迹在朱紫国(127,90),少侠们准备好了就过去看看吧。",
                 "trk": "去朱紫国找巧智魔。剩余时间2小时。"}
-        _uibox = []
+        _ulogs = []
 
         def _ocr_ui(img, **kw):
             if _Shot.last == _dband2:
@@ -1796,46 +1486,36 @@ def sec_bell():
         _ut = tools_bell.BellTool(
             types.SimpleNamespace(
                 cfg={"bell": {}}, logs=[],
-                log=lambda m, ui=True, detail="", ui_text=None:
-                    _uibox.append((ui, ui_text or m))),
+                log=lambda m, **kw: _ulogs.append(m)),
             _Shot, lambda: types.SimpleNamespace(recognize_blocks=_ocr_ui))
         _ut.regions = lambda: [list(_reg2)]
-        _ut._slot[1] = {"region": tuple(_reg2), "trk": None, "miss": 0,
-                        "trk_nohdr": 0, "dlg_pend": None,
-                        "trk_last": None, "trk_mode": "item"}
+        _ut._slot[1] = tools_bell.SlotState(
+            region=tuple(_reg2), trk=list(_tr2))
+        tools_bell.cursor_pos = lambda: (_tr2[0] + 30, _tr2[1] + 30)
         _ut._ts = 0.0
-        _ut.tick(force=False)                  # ①对话框(巧智魔)
+        _ut._slot[1].trk_ts = 0.0
+        _ut.tick(force=False)                  # ①对话框(巧智魔):开周期
         _ut._ts = 0.0
-        _ut._slot[1]["trk_ts"] = 0.0
-        _ut.tick(force=False)                  # ②整窗那一拍(还没框 -> 定位到任务栏)
-        _ut._ts = 0.0
-        _ut._slot[1]["trk_ts"] = 0.0
-        _ut.tick(force=False)                  # ③任务栏那一拍(巧智魔的行没坐标)
-        _ui_txts = [t for _u, t in _uibox]
-        check("界面日志:对话框/整窗/任务栏都换成短句(细节留在文件里)",
-              any(t == "[铃铛]对话框 巧智魔 朱紫国(127,90)" for t in _ui_txts)
-              and any(t in ("[铃铛]整窗 定位到任务栏", "[铃铛]整窗 未定位到任务栏")
-                      for t in _ui_txts)
-              and any(t == "[铃铛]任务栏 巧智魔 未发现坐标" for t in _ui_txts),
-              str(_ui_txts))
-        check("界面日志:「从整窗学到框」那行只进文件、不进界面",
-              all(not u for u, t in _uibox if "学到框" in t),
-              str([t for u, t in _uibox if "学到框" in t]))
-        # **同一件事不重复刷**(用户定的 2026-10-17):报出目标那行就是界面上的短句;
-        # 读数那一行(对话框/任务栏的"识别 …")与「对话框开新周期」都只进文件。
+        _ut._slot[1].trk_ts = 0.0
+        _ut.tick(force=False)                  # ②任务栏那一拍(巧智魔的行没坐标)
+        check("日志:对话框那拍报出目标(妖魔位置行,图名在前)",
+              any(t == "[铃铛]妖魔位置: 朱紫国 (127,90)[来自对话框]"
+                  for t in _ulogs),
+              str(_ulogs))
+        check("日志:整窗/学框那些行没有了(框来自表,没有那一拍)",
+              all("整窗" not in t and "学到框" not in t for t in _ulogs),
+              str([t for t in _ulogs if "整窗" in t or "学到框" in t]))
+        # **同一件事不重复报**:报出目标那行就是结论行;同值再来(任务栏那拍
+        # 和对话框同一个坐标)被 _last 去重,不再出第二条。
         _ui9["trk"] = "◆蛊虫发现妖魔在朱紫国(127,90),快去降服他吧。"
         for _ in range(3):                     # 任务栏给出坐标 -> 连读两次 -> 报出来
             _ut._ts = 0.0
-            _ut._slot[1]["trk_ts"] = 0.0
+            _ut._slot[1].trk_ts = 0.0
             _ut.tick(force=False)
-        _ui_txts = [t for _u, t in _uibox]
-        check("界面日志:同一件事只出现一次(报出目标=短句;开新周期/读数行只进文件)",
-              _ui_txts.count("[铃铛]对话框 巧智魔 朱紫国(127,90)") == 1
-              and "[铃铛]任务栏 巧智魔 朱紫国(127,90)" in _ui_txts
-              and all(not u for u, t in _uibox if "开新周期" in t)
-              and all(not u for u, t in _uibox
-                      if "妖魔位置" in t and "任务栏" in t),
-              str(_uibox))
+        check("日志:同一件事只出现一次(同值被去重,任务栏那拍不再报)",
+              _ulogs.count("[铃铛]妖魔位置: 朱紫国 (127,90)[来自对话框]") == 1
+              and not any("[来自任务栏]" in t for t in _ulogs),
+              str(_ulogs))
 
         # 待确认的新坐标**不能因为"一拍没读到"就丢**(2026-10-17 实测:第二遍重扫那拍
         # 撞上面板暗比 0.59 vs 阈值 0.60 被判"消失",(108,26) 直接没了,红点一直不刷新)。
@@ -1856,7 +1536,7 @@ def sec_bell():
         _pt = tools_bell.BellTool(
             types.SimpleNamespace(
                 cfg={"bell": {}},
-                logs=[], log=lambda m, ui=True, detail="", **kw: None),
+                logs=[], log=lambda m, **kw: None),
             lambda: win, lambda: types.SimpleNamespace(recognize_blocks=_ocr_pd))
         _pt._slot[1] = seed_state(win.rect, mode="item")
         _pt._cycle[1] = ("宝象国", 150, 54)
@@ -1864,12 +1544,12 @@ def sec_bell():
         _pt._ts = 0.0
         _pt.tick(force=False)                  # 第一遍读到 A;重扫那拍没读到
         check("对话框:第二遍没读到 -> 待确认的新值别丢(等 TTL,不然红点不刷新)",
-              _pt._slot[1].get("dlg_pend") == ("朱紫国", 127, 90)
+              _pt._slot[1].dlg_pend == ("朱紫国", 127, 90)
               and _pt.ui_state()["spot"] != ("朱紫国", 127, 90),
-              f"pend={_pt._slot[1].get('dlg_pend')} "
+              f"pend={_pt._slot[1].dlg_pend} "
               f"spot={_pt.ui_state()['spot']}")
         _pt._ts = 0.0
-        _pt._slot[1]["dlg_ts"] = 0.0           # 假装过了 0.3 秒(测试不睡觉)
+        _pt._slot[1].dlg_ts = 0.0           # 假装过了 0.3 秒(测试不睡觉)
         _pt.tick(force=False)                  # 下一拍:同一句读回同一个值 -> 采信
         check("对话框:下一拍读到同一个值 -> 立刻采信(不用重新等两遍)",
               _pt._cycle.get(1) == ("朱紫国", 127, 90),
@@ -1894,20 +1574,20 @@ def sec_bell():
             types.SimpleNamespace(
                 cfg={"bell": {}},
                 logs=_logs2,
-                log=lambda m, ui=True, detail="", **kw: _logs2.append(m)),
+                log=lambda m, **kw: _logs2.append(m)),
             lambda: win, lambda: types.SimpleNamespace(recognize_blocks=_ocr_pd2))
         _pt2._slot[1] = seed_state(win.rect, mode="item")
-        _pt2._slot[1]["dlg_gone"] = time.time() - 60   # 面板上次消失是 1 分钟前
+        _pt2._slot[1].dlg_gone = time.time() - 60   # 面板上次消失是 1 分钟前
         _pt2._cycle[1] = ("宝象国", 150, 54)
         win.dialog = True
         _pt2._ts = 0.0
         _pt2.tick(force=False)                 # 第一遍读到 A2;第二遍没读到
         check("对话框:记 pend 时 TTL 计时归零(旧的面板消失时刻不许把新值顶掉)",
-              _pt2._slot[1].get("dlg_pend") == ("西梁女国", 99, 36),
-              f"pend={_pt2._slot[1].get('dlg_pend')} "
-              f"gone={_pt2._slot[1].get('dlg_gone')}")
+              _pt2._slot[1].dlg_pend == ("西梁女国", 99, 36),
+              f"pend={_pt2._slot[1].dlg_pend} "
+              f"gone={_pt2._slot[1].dlg_gone}")
         _pt2._ts = 0.0
-        _pt2._slot[1]["dlg_ts"] = 0.0
+        _pt2._slot[1].dlg_ts = 0.0
         _pt2.tick(force=False)                 # 下一拍读回同一个值 -> 改口
         check("对话框:panel 闪一下之后读到同一个值 -> 改口(不再重新等两遍)",
               _pt2._cycle.get(1) == ("西梁女国", 99, 36)
@@ -1936,7 +1616,7 @@ def sec_bell():
             types.SimpleNamespace(
                 cfg={"bell": {}},
                 logs=_logs3,
-                log=lambda m, ui=True, detail="", **kw: _logs3.append(m)),
+                log=lambda m, **kw: _logs3.append(m)),
             lambda: win, lambda: types.SimpleNamespace(recognize_blocks=_ocr_pd3))
         _pt3._slot[1] = seed_state(win.rect, mode="item")
         _pt3._cycle[1] = ("西梁女国", 73, 94)
@@ -1966,11 +1646,11 @@ def sec_bell():
         tools_bell.cursor_pos = lambda: (_tr2[0] + 30, _tr2[1] + 30)   # 压在任务栏上
         _nt = _bell_tool({}, _ocr_nh)
         _nt._ts = 0.0
-        _nt._slot.setdefault(1, {})["trk_ts"] = 0.0
+        _nt._slot[1].trk_ts = 0.0
         _nt.tick(force=False)                      # ① 对话框开周期(巧智魔 -> hover)
         _hs.clear()
         _nt._ts = 0.0
-        _nt._slot[1]["trk_ts"] = 0.0
+        _nt._slot[1].trk_ts = 0.0
         _nt.tick(force=False)                      # ② 鼠标到了:读加高过的那块
         check("悬停档:读的是往上加高过的那块,而且**单次**读到就认",
               _nt.spot == ("宝象国", 118, 54)
@@ -1981,8 +1661,8 @@ def sec_bell():
 
         # ---- hover 档:任务栏扫描由**鼠标位置**把门(用户定的 2026-10-16) ----
         # "鼠标接近红框就开快速扫描,离开就停":不接近时任务栏这一支**整个跳过**
-        # (一拍都不读、一次 OCR 都不做,连"还没框时的整窗找框"也跳过 —— 没鼠标就
-        # 没有悬停行,早学到框没用);鼠标一接近,第一个 `near` 的那一拍自然去找。
+        # (一拍都不读、一次 OCR 都不做 —— 没鼠标就没有悬停行,读它纯属白花);
+        # 鼠标一接近,那一拍自然开始读。
         # 不接近**不打日志**(省得刷屏,心跳里能看到节奏)。**item 档不受这道门管**
         # (逐妖蛊虫的坐标是任务栏里直接写着的,跟鼠标无关)。
         _gate = {"n": 0,
@@ -1999,40 +1679,41 @@ def sec_bell():
         tools_bell.cursor_pos = lambda: (0, 0)     # 鼠标在别处(离任务栏很远)
         _gt2 = _bell_tool({}, _ocr_gate)
         _gt2._ts = 0.0
-        _gt2._slot.setdefault(1, {})["trk_ts"] = 0.0
+        _gt2._slot[1].trk_ts = 0.0
         _gt2.tick(force=False)                     # ① 对话框开周期(巧智魔 -> hover)
         _gate["n"] = 0
         for _ in range(3):                         # ② 鼠标一直在别处
             _gt2._ts = 0.0
-            _gt2._slot[1]["trk_ts"] = 0.0
+            _gt2._slot[1].trk_ts = 0.0
             _gt2.tick(force=False)
         _n_away = _gate["n"]
         check("hover 档:鼠标不在附近 -> 任务栏一拍都不读(零 OCR)",
-              _gt2._slot[1].get("trk_mode") == "hover" and _n_away == 0,
-              f"{_gt2._slot[1].get('trk_mode')} 鼠标在别处时读任务栏 {_n_away} 次")
+              _gt2._slot[1].trk_mode == "hover" and _n_away == 0,
+              f"{_gt2._slot[1].trk_mode} 鼠标在别处时读任务栏 {_n_away} 次")
 
         _gt3 = _bell_tool({}, _ocr_gate)
-        _gt3._slot[1] = seed_state(_reg2, mode="hover")    # **还没有框**(trk=None)
+        _gt3._slot[1] = seed_state(_reg2, trk=None, mode="hover")
+        # 没量到框的尺寸(trk=None:不支持的分辨率,2026-10-21 起不读任务栏)
         tools_bell.cursor_pos = lambda: (5000, 5000)   # 连客户端窗口都不在附近
         _gate["n"] = 0
-        for _ in range(3):                         # 连"整窗找框"也不该跑
+        for _ in range(3):                         # 没框:连读都不该读
             _gt3._ts = 0.0
-            _gt3._slot.setdefault(1, {})["trk_ts"] = 0.0
+            _gt3._slot[1].trk_ts = 0.0
             _gt3.tick(force=False)
-        check("hover 档:还没框 + 鼠标不在附近 -> 整窗找框也跳过(没鼠标就没有悬停行)",
-              _gt3._slot[1].get("trk") is None and _gate["n"] == 0,
-              f"框={_gt3._slot[1].get('trk')} 读任务栏 {_gate['n']} 次")
+        check("hover 档:没量到框的尺寸 -> 任务栏一拍都不读(没有整窗找框这回事了)",
+              _gt3._slot[1].trk is None and _gate["n"] == 0,
+              f"框={_gt3._slot[1].trk} 读任务栏 {_gate['n']} 次")
 
         tools_bell.cursor_pos = lambda: (_tr2[0] + 30, _tr2[1] + 30)   # 鼠标进附近
         _gate["n"] = 0
         _gt2._ts = 0.0
-        _gt2._slot[1]["trk_ts"] = 0.0
+        _gt2._slot[1].trk_ts = 0.0
         _gt2.tick(force=False)
         _n_near = _gate["n"]
         tools_bell.cursor_pos = lambda: (0, 0)     # 又离开
         for _ in range(2):
             _gt2._ts = 0.0
-            _gt2._slot[1]["trk_ts"] = 0.0
+            _gt2._slot[1].trk_ts = 0.0
             _gt2.tick(force=False)
         check("hover 档:鼠标一进附近就开扫,离开又停",
               _n_near >= 1 and _gate["n"] == _n_near,
@@ -2048,11 +1729,11 @@ def sec_bell():
         _it2._slot[1] = seed_state(_reg2, trk=_tr2, mode="item")
         for _ in range(3):                         # item 档:照旧读
             _it2._ts = 0.0
-            _it2._slot[1]["trk_ts"] = 0.0
+            _it2._slot[1].trk_ts = 0.0
             _it2.tick(force=False)
         check("hover 档的鼠标门管不到 item 档:鼠标在别处也照旧盯任务栏",
-              _it2._slot[1].get("trk_mode") == "item" and _gate["n"] >= 2,
-              f"{_it2._slot[1].get('trk_mode')} 鼠标在别处仍读 {_gate['n']} 次")
+              _it2._slot[1].trk_mode == "item" and _gate["n"] >= 2,
+              f"{_it2._slot[1].trk_mode} 鼠标在别处仍读 {_gate['n']} 次")
         _gate["dlg"] = "我发现它的踪迹在宝象国(150,54),去把巧智魔降服了吧。"
         _gate["trk"] = "在宝象国(118,54)处"
 
@@ -2084,7 +1765,7 @@ def sec_bell():
         app6 = types.SimpleNamespace(
             cfg=core.split_config({
                                    "active_tool": "bell"}),
-            logs=[], log=lambda m, ui=True, detail="", **kw: app6.logs.append(m))
+            logs=[], log=lambda m, **kw: app6.logs.append(m))
         tool6 = tools_bell.BellTool(
             app6, lambda: types.SimpleNamespace(grab=_shot6),
             lambda: types.SimpleNamespace(
@@ -2095,7 +1776,7 @@ def sec_bell():
         tool6._slot[1] = seed_state(_reg2, trk=(760, 200, 1060, 500), mode="item")
         tools_bell.cursor_pos = lambda: (0, 0)
         tool6._ts = 0.0
-        tool6._slot[1]["trk_ts"] = 0.0
+        tool6._slot[1].trk_ts = 0.0
         tool6.tick(force=False)
         _moved = _far6["last"]
         check("任务栏框:超出扫描区时裁剪整体往里挪(宽不变)+ 日志留一行",
@@ -2129,17 +1810,17 @@ def sec_bell():
             app7 = types.SimpleNamespace(
                 cfg=core.split_config({
                                        "active_tool": "bell"}),
-                logs=[], log=lambda m, ui=True, detail="", **kw: app7.logs.append(m))
+                logs=[], log=lambda m, **kw: app7.logs.append(m))
             tool7 = tools_bell.BellTool(
                 app7, _Shot, lambda: types.SimpleNamespace(recognize_blocks=ocr7))
             tool7.regions = lambda: [list(_reg2)]
             tool7._slot[1] = seed_state(_reg2, trk=_tr2)
             tool7._ts = 0.0
-            tool7._slot.setdefault(1, {})["trk_ts"] = 0.0
+            tool7._slot[1].trk_ts = 0.0
             tool7.tick(force=False)                    # ① 对话框开周期(逐妖蛊虫 -> item)
             _first = tool7.spot
             tool7._ts = 0.0
-            tool7._slot[1]["trk_ts"] = 0.0
+            tool7._slot[1].trk_ts = 0.0
             tool7.tick(force=True)                     # ② 任务栏报新坐标(force 让门控让路)
             return (_first, tool7.spot, st7["limits"],
                     [m for m in app7.logs if "复读不一致" in m])
@@ -2237,7 +1918,7 @@ def sec_bell():
             app10 = types.SimpleNamespace(
                 cfg=core.split_config({
                                        "active_tool": "bell"}),
-                logs=[], log=lambda m, ui=True, detail="", **kw: app10.logs.append(m))
+                logs=[], log=lambda m, **kw: app10.logs.append(m))
             tool10 = tools_bell.BellTool(
                 app10, _Shot,
                 lambda: types.SimpleNamespace(recognize_blocks=ocr10))
@@ -2245,16 +1926,16 @@ def sec_bell():
             tool10._slot[1] = seed_state(_reg2, trk=_tr2)
             for _ in range(2):                     # ① 先把这个周期开起来
                 tool10._ts = 0.0
-                tool10._slot[1]["trk_ts"] = 0.0
+                tool10._slot[1].trk_ts = 0.0
                 tool10.tick(force=False)
-            _m0 = tool10._slot[1].get("trk_mode")
+            _m0 = tool10._slot[1].trk_mode
             cnt["n"] = 0                           # ② 话术出现,往后跑三拍
             stt["stop"] = stop_text
             for _ in range(3):
                 tool10._ts = 0.0
-                tool10._slot[1]["trk_ts"] = 0.0
+                tool10._slot[1].trk_ts = 0.0
                 tool10.tick(force=True)
-            return (_m0, tool10._slot[1].get("trk_mode"), cnt["n"],
+            return (_m0, tool10._slot[1].trk_mode, cnt["n"],
                     [m for m in app10.logs if "收手话术" in m])
 
         _bad = []
@@ -2329,17 +2010,17 @@ def sec_bell():
         _ct = _bell_tool({}, _ocr_cg)
         for _ in range(2):                        # 认类型 -> item
             _ct._ts = 0.0
-            _ct._slot.setdefault(1, {})["trk_ts"] = 0.0
+            _ct._slot[1].trk_ts = 0.0
             _ct.tick(force=False)
         _cg["trk"] = None                         # 任务栏整块没显示
         _ct._ts = 0.0
-        _ct._slot[1]["trk_ts"] = 0.0
+        _ct._slot[1].trk_ts = 0.0
         _ct.tick(force=False)
         check("逐妖蛊虫盯着第二个坐标:读不到字也不退回 1.0s(一直 0.25s)",
-              _ct._slot[1].get("trk_mode") == "item"
-              and _ct._slot[1].get("trk_gap") == tools_bell.TRK_ITEM_GAP,
-              f"{_ct._slot[1].get('trk_mode')} "
-              f"节奏{_ct._slot[1].get('trk_gap')}")
+              _ct._slot[1].trk_mode == "item"
+              and _ct._slot[1].trk_gap == tools_bell.TRK_ITEM_GAP,
+              f"{_ct._slot[1].trk_mode} "
+              f"节奏{_ct._slot[1].trk_gap}")
 
         # 巧智魔/怯弱妖那条悬停行同理(只闪一下;用的是 HOVER_GAP)。
         # 同样:对话框那行得点出"巧智魔"来 —— 类型只由对话框给(2026-10-16)。
@@ -2361,17 +2042,17 @@ def sec_bell():
         _ct2 = _bell_tool({}, _ocr_ch)
         for _ in range(2):
             _ct2._ts = 0.0
-            _ct2._slot.setdefault(1, {})["trk_ts"] = 0.0
+            _ct2._slot[1].trk_ts = 0.0
             _ct2.tick(force=False)
         _ch["trk"] = None
         _ct2._ts = 0.0
-        _ct2._slot[1]["trk_ts"] = 0.0
+        _ct2._slot[1].trk_ts = 0.0
         _ct2.tick(force=False)
         check("巧智魔/怯弱妖盯着悬停那行:读不到字也不退回 1.0s(用 HOVER_GAP)",
-              _ct2._slot[1].get("trk_mode") == "hover"
-              and _ct2._slot[1].get("trk_gap") == tools_bell.HOVER_GAP,
-              f"{_ct2._slot[1].get('trk_mode')} "
-              f"节奏{_ct2._slot[1].get('trk_gap')}")
+              _ct2._slot[1].trk_mode == "hover"
+              and _ct2._slot[1].trk_gap == tools_bell.HOVER_GAP,
+              f"{_ct2._slot[1].trk_mode} "
+              f"节奏{_ct2._slot[1].trk_gap}")
 
     # 真机截图夹具(docs/shots):`check_shots.py` 和 `expected.json` 靠**文件名**
     # 对号。这里只查"文件都在 + 表里的图名/坐标合法",**不跑 OCR** —— 回归里不建
@@ -2460,39 +2141,9 @@ def sec_bell():
              if "对话框" in row[0] and not tools_bell.has_bell_words(row[1])]
     check("话术门槛:六种怪的对话框原文都过得了(别把自己的任务挡了)",
           not _miss, str(_miss))
-    # 两步找任务栏(用户定的):①先找「任务追踪」表头 —— 没有就说明面板没开,
-    # 什么都不做;②面板里得有「降妖伏魔」这段,挂着别的任务就不读
-    HDR_BLK = blk("任务追踪", 700, 140)
-    _tr = tools_bell.track_rect(
-        [blk("聊天:我在东海湾(1,2)打怪", 20, 210), HDR_BLK, TITLE, TRK_BLK],
-        (900, 640))
-    check("任务栏框:围着「任务追踪」表头取一块(表头在任务名上面,自然把悬停行也圈进来)",
-          _tr == (658, 104, 900, 320)
-          and tools_bell.track_rect([HDR_BLK, TRK_BLK], (900, 640)) is None
-          and tools_bell.track_rect([TITLE, TRK_BLK], (900, 640)) is None
-          and tools_bell.track_rect([blk("任务剩余时间120分钟。", 700, 140),
-                                     TITLE], (900, 640)) is None,
-          str(_tr))
-    # 安全边距(用户定的 2026-10-16):学到的框四周各往外留 `TRK_PAD` —— 防"框边切字"
-    # (左边切进表头 -> `务追踪`;右边切掉行尾坐标 -> `宝象 40，12）`)。四周各量一遍。
-    check("任务栏框:四周各留一层安全边距(防框边切字,`TRK_PAD`)",
-          tools_bell.TRK_PAD == (24, 18, 40, 18)
-          and _tr == (682 - tools_bell.TRK_PAD[0], 122 - tools_bell.TRK_PAD[1],
-                      900, 302 + tools_bell.TRK_PAD[3])
-          # 贴到图片左/上边时不再往外(夹在 0 上)
-          and tools_bell.track_rect(
-              [blk("任务追踪", 4, 4), TITLE, TRK_BLK], (900, 640))[0] == 0
-          and tools_bell.track_rect(
-              [blk("任务追踪", 4, 4), TITLE, TRK_BLK], (900, 640))[1] == 0,
-          f"{_tr} pad={tools_bell.TRK_PAD}")
-    check("任务栏框:表头认得出(「任/务」丢一个也认,太长的行/没「追」的排掉)",
-          all(tools_bell._is_hdr(t) for t in ("任务追踪", "务追踪", "任务追",
-                                              "任追踪", "任务追踩"))
-          and not tools_bell._is_hdr("任务剩余时间120分钟。")
-          and not tools_bell._is_hdr("师门任务")
-          and not tools_bell._is_hdr("") and not tools_bell._is_hdr(None))
     # 标题那行常被读花(实测「降双快通」/「降欢风衡」/「降妖优魔」):**以「降」开头
-    # 且不长**就认 —— 别的任务标题不以「降」开头,不会误认(框的位置仍由表头定)。
+    # 且不长**就认 —— 别的任务标题不以「降」开头,不会误认(「降妖伏魔」标题下
+    # 那一段就是 _bell_scope 圈范围用的)。
     check("任务栏框:标题读花成「降双快通」「降欢风衡」也认(只认以降开头且不长)",
           all(tools_bell._is_title(t) for t in ("降妖伏魔", "降双快通",
                                                "降欢风衡", "降妖优魔"))
@@ -2511,18 +2162,18 @@ def sec_bell():
     eng_b._safe("cycle", True)
     check("铃铛:新妖魔只写日志不给界面播报(用户不要语音)",
           app_b.said == []
-          and app_b.logs_all and any("[铃铛]" in m and "88" in m
-                                     for m, _ in app_b.logs_all)
+          and app_b.logs and any("[铃铛]" in m and "88" in m
+                                 for m in app_b.logs)
           and eng_b.bell_tool.target == "朱紫国 (88,94)",
           f"{app_b.said} {eng_b.bell_tool.target}")
     check("铃铛:引擎上留了结构化的妖魔位置(界面画红点用)",
           eng_b.bell_tool.spot == ("朱紫国", 88, 94), str(eng_b.bell_tool.spot))
-    _pos0 = len([m for m, _ in app_b.logs_all if "妖魔位置" in m])
+    _pos0 = len([m for m in app_b.logs if "妖魔位置" in m])
     eng_b._safe("cycle", True)
     check("铃铛:同一只妖魔不重复记(坐标没变就不再报一轮)",
           app_b.said == []
-          and len([m for m, _ in app_b.logs_all if "妖魔位置" in m]) == _pos0,
-          str([m for m, _ in app_b.logs_all if "妖魔位置" in m]))
+          and len([m for m in app_b.logs if "妖魔位置" in m]) == _pos0,
+          str([m for m in app_b.logs if "妖魔位置" in m]))
     eng_b.ocr.recognize_blocks = lambda img, **kw: [
         blk("我发现它的踪迹在西凉女国(12,34)，少侠", 100, 200)]
     eng_b._safe("cycle", True)
@@ -2772,16 +2423,14 @@ def _bell_app():
     app.root = tk.Tk()
     app.root.withdraw()                   # 测试时不弹窗
     app.cfg = core.load_config()          # 走沙箱里的 CONFIG_PATH
-    import queue as _q
-    app._logs = _q.Queue()                # 真 Queue:_drain_logs 才能取出来
     app.logs = []
     app.engine = BellEngine()
     app.speaker = None
     _BELL_ALIVE.append(app)               # 见上面:别让 Tk 对象被回收
 
-    def log(msg, ui=True, detail="", **kw):
+    def log(msg, detail="", **kw):
         app.logs.append(msg)
-        gui.App.log(app, msg, ui, detail)  # 仍写进沙箱的 bell.log
+        gui.App.log(app, msg, detail)      # 仍写进沙箱的 bell.log
     app.log = log
     return app
 

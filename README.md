@@ -20,7 +20,7 @@ python -m venv .venv
 
 # 命令行
 python main.py --layout      # 量当前客户端尺寸下对话框的位置,写进分辨率表
-python tests.py --quiet      # 回归测试(205 条)
+python tests.py --quiet      # 回归测试(187 条)
 python check_shots.py        # 真机截图离线校验(docs/shots/ 里六种怪 10 张)
 ```
 

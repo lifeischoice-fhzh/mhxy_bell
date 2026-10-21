@@ -11,7 +11,7 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 ```bash
 # Python 用项目 venv(建法见 README)
 .venv/Scripts/pythonw.exe main.py        # 启动
-.venv/Scripts/python.exe tests.py --quiet # 回归:205 条,约 13 秒
+.venv/Scripts/python.exe tests.py --quiet # 回归:187 条,约 20 秒
 .venv/Scripts/python.exe check_shots.py   # 真机截图离线校验(docs/shots,10 张,约 7 秒)
 ```
 
@@ -40,7 +40,7 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 - DPI:Tk 的 winfo_* 是逻辑像素,截图/窗口矩形是物理像素,换算用
   `gui.scale_rect(rect, gui.screen_scale(root))`
 - 日志分家:小窗**没有日志区**(2026-10-21 撤),所有日志只进 `bell.log`
-  (`tools/bell.py` 的 `ui=`/`ui_text=` 参数保留,`gui.log` 照单全收不再另作他用)
+  (`ui=`/`ui_text=` 参数与 `_logs` 队列同日删光,`App.log` 只剩 `(msg, detail="")`)
 
 ## 五条红线(改完自己 grep 验)
 
@@ -70,11 +70,13 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 
 ## 与原项目的关系
 
-识别逻辑(`tools/bell.py`,除 `on()` 一处:监听常开)与 `E:/Project/keju-answerer`
-保持一致,那边的铃铛 bug 修复可以直接拷过来,反之亦然;`ui/bell.py` 2026-10-20
-起按本应用的界面走了(顶栏/抽屉/开关撤掉),不再逐字节一致。`data/` /
-`docs/bell-internals.md` 的识别口径部分两边同源。改完跑 `tests.py --quiet`
-全绿再收工。
+识别逻辑(`tools/bell.py`)原先与 `E:/Project/keju-answerer` 保持一致,那边的铃铛
+bug 修复可以直接拷过来,反之亦然;**2026-10-21 起本应用只支持两档分辨率、任务栏框
+一律来自表,删掉了整窗找框/学框/作废/退避冷却那条兜底链**(原项目还有),两边不再
+逐字节一致 —— 拷修复前先 diff 这一块。`ui/bell.py` 2026-10-20 起按本应用的界面
+走了(顶栏/抽屉/开关撤掉)。`data/` / `docs/bell-internals.md` 的识别口径部分原先
+两边同源,同样自 2026-10-21 起分叉(本应用侧已按删整窗后的状态改写)。改完跑
+`tests.py --quiet` 全绿再收工。
 
 ## 工作方式约定
 

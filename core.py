@@ -479,7 +479,7 @@ class Engine(threading.Thread):
         except Exception:
             import traceback
             self.app.log("[引擎]任务异常(已恢复):\n"
-                         + traceback.format_exc(), ui=False)
+                         + traceback.format_exc())
 
     @property
     def ocr_ok(self):
@@ -499,13 +499,13 @@ class Engine(threading.Thread):
         try:
             self.bell_tool.stop()
         except Exception as e:
-            self.app.log(f"[引擎]停止工具线程失败: {e}", ui=False)
+            self.app.log(f"[引擎]停止工具线程失败: {e}")
         try:
             self.bell_tool.join(timeout)        # 没 start 过的线程会抛,忽略即可
         except Exception:
             pass
         if self.bell_tool.is_alive():
-            self.app.log("[引擎]铃铛线程未能退出", ui=False)
+            self.app.log("[引擎]铃铛线程未能退出")
 
     def run(self):
         # 引擎初始化整段兜异常:打包版无控制台,静默死掉会让看门狗每 10 秒
@@ -524,7 +524,7 @@ class Engine(threading.Thread):
         except BaseException as e:
             import traceback
             self.app.log(f"[OCR]引擎初始化失败: {e}")
-            self.app.log(traceback.format_exc(), ui=False)
+            self.app.log(traceback.format_exc())
             return
         self._wake_tools()              # 截图/OCR 都就绪了,可以开工了
         # 识别任务全在铃铛自己的线程里跑,这条线程只剩"活着=基础设施还在"
@@ -548,7 +548,7 @@ class Engine(threading.Thread):
             (tool.activate if on else tool.deactivate)()
         except Exception as e:                  # 工具没有这套 API:至少把标志摆对
             tool.enabled = bool(on)
-            self.app.log(f"[引擎]切换工具开关失败({e})", ui=False)
+            self.app.log(f"[引擎]切换工具开关失败({e})")
 
     def _wake_tools(self):
         """工具线程空闲时完全不轮询,状态一变就得叫它一声。"""

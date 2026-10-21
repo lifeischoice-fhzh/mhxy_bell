@@ -1,6 +1,5 @@
 """界面层:窗口生命周期调度与各按钮回调(布局在 ui/ 下)。"""
 import os
-import queue
 import time
 
 import core                 # 地基:配置/截图/OCR/引擎与键名归属表
@@ -99,7 +98,7 @@ class App:
             seen = self._unknown_keys = set()
         if key not in seen:
             seen.add(key)
-            self.log(f"[配置]键「{key}」不在归属表里,已暂存到 app 分区", ui=False)
+            self.log(f"[配置]键「{key}」不在归属表里,已暂存到 app 分区")
         return "app"
 
     def _get(self, key, default=None):
@@ -116,7 +115,6 @@ class App:
         self.root.report_callback_exception = self._on_tk_error
         self.root.withdraw()           # 主窗口不露面:界面就是降妖伏魔小窗
         self.cfg = core.load_config()
-        self._logs: queue.Queue = queue.Queue()
         try:
             if os.path.exists(core.LOG_PATH):
                 import datetime
@@ -433,7 +431,7 @@ class App:
                   if not n.startswith("_")}
         for name, msg in tools_bell.auto_calibrate_from_bounds(overwrite=True):
             if not msg.startswith("sx="):
-                self.log(f"[铃铛]{name} 未自动标定:{msg}", ui=False)
+                self.log(f"[铃铛]{name} 未自动标定:{msg}")
             elif before.get(name) != tools_bell.map_calib(name):
                 self.log(f"[铃铛]{name} 按坐标范围标定 {msg}")
 
@@ -461,7 +459,7 @@ class App:
             try:
                 shutdown()
             except Exception as e:
-                self.log(f"[引擎]旧引擎关闭失败(忽略): {e}", ui=False)
+                self.log(f"[引擎]旧引擎关闭失败(忽略): {e}")
 
         _th.Thread(target=_bg, name="引擎回收", daemon=True).start()
 
@@ -477,22 +475,18 @@ class App:
         except Exception:
             where = ""
         try:
-            self.log(f"[界面]回调出错({exc.__name__}):{val}{where}", ui=False)
+            self.log(f"[界面]回调出错({exc.__name__}):{val}{where}")
         except Exception:
             pass
 
-    def log(self, msg: str, ui: bool = True, detail: str = "",
-            ui_text=None):
-        """所有消息都写 bell.log 文件(小窗没有日志区了,2026-10-21 撤)。
+    def log(self, msg: str, detail: str = ""):
+        """所有消息都写 bell.log 文件(小窗没有日志区,2026-10-21 撤)。
 
         detail: 只写进文件的补充信息(如 OCR/块数耗时),方便按日志定位问题。
-        ui / ui_text: 历史参数 —— 从前喂小窗日志区用的,现在没有界面日志,
-        `tools/bell.py` 的调用点保留参数、这里照单全收但不另作他用。
         消息统一成 [时间][模块]内容;万一哪条忘了写模块,兜底成 [其他]。
         """
         if not msg.startswith("["):
             msg = "[其他]" + msg
-        self._logs.put((msg, ui))
         try:
             with open(core.LOG_PATH, "a", encoding="utf-8") as f:
                 stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -504,15 +498,6 @@ class App:
         # 这一趟的活各自兜一层:这个方法是 `after` 自排自的整条界面刷新链的入口,
         # 只要有一次异常漏出去,链就断了 —— 窗口还能拖、引擎还在扫,但
         # 红点/坐标再也不更新,看起来就是"卡死不动"(原项目 2026-10-17 检视定的)。
-        try:
-            while True:
-                try:
-                    self._logs.get_nowait()
-                except queue.Empty:
-                    break
-                # 没有界面日志:取出来只为清队列,内容 log() 已写进文件
-        except Exception:
-            pass
         # 妖魔位置:读到妖魔就刷大字坐标 + 红点
         try:
             bst = self.engine.bell_tool.ui_state()
