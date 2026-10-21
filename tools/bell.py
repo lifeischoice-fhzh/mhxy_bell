@@ -224,6 +224,10 @@ BUSY_ROW_FRAC = 0.08                     # 一行里"亮|彩"占比到这么多�
 PANEL_MAX_BUSY = 0.50                    # 有内容的行超过这个占比就不是面板
 DIALOG_MIN_H = 200                       # 面板至少这么高(真对话框实测 244~405)
 DIALOG_GAP = 2.0                         # 面板内容没变时,这么久兜底重读一次
+# 非铃铛面板(买东西/闲聊/聊天频道)的内容一直在滚:变了也别每拍都读 —— 真机
+# 上这种占 OCR 的大头(2026-10-21 会话:490 秒里 267 次 OCR 全是它,每次一两百
+# 毫秒,全白烧)。铃铛面板(`dlg_bell=True`)不受影响:翻页要当轮重读。
+DIALOG_OTHER_GAP = 0.6
 SIG_MIN = 10.0                           # 面板内容签名差多少算"这页换了"
 PEND_TTL = 10.0                          # 待确认的对话框值最多挂这么久(面板消失/读不到
 # 持续超过它就作废)—— 2026-10-17:重扫撞上面板暗比 0.59(阈值 0.60)被判"消失",
@@ -239,9 +243,17 @@ HOVER_LIFT = 120                         # 悬停那行要往上多留一截才�
 #   巧智魔/怯弱妖:第二个坐标只在鼠标悬停时才出现 -> 0.25 秒盯,读到坐标就停;
 #   其余(招魂帖/招魂幡/梦魇魔/迷幻妖):坐标对话框里就有 -> **一次都不读**。
 # 类型**只由对话框给**(见 `_publish` / `trk_plan`),不用用户配置。
-TRK_ITEM_GAP = 0.5                       # 逐妖蛊虫盯着第二个坐标的节奏(用户定的 0.5)
+TRK_ITEM_GAP = 0.5                       # 逐妖蛊虫读到没确认的候选时,下一拍紧跟的节奏
 TRK_GAP = 0.6                            # 其余档的节奏
-TRK_GAP_IDLE = 1.0                       # 任务栏没显示时(重试)的节奏
+# **item 档的内容签名门控**(2026-10-21):等的是"任务栏换了字",不是定时读 ——
+# 原来 0.5s 一次的定时 OCR,在等道具生效的几十秒里几乎全是白读。现在没变最多
+# TRK_SIG_GAP 兜底一次、变了当拍就读;只有读到**没确认的候选**时才收紧回
+# TRK_ITEM_GAP(两遍一致要连读)。hover 档不吃这套(裁剪跟着鼠标走,签名不可比)。
+TRK_SIG_GAP = 2.0
+# 任务栏签名差多少算"换了字":坐标行换一两个字在 24x48 的采样格里只有 2~4 个格
+# (差 0.5~1.0),比"整页换"的 SIG_MIN=10 低得多;任务栏深底不透光,背景在动进
+# 不了签名(对话框同款实测差 0)。阈值偏低的代价只是"偶尔多读一次",不会漏。
+TRK_SIG_MIN = 0.5
 TYPE_ITEM = "逐妖蛊虫"                     # 任务栏会刷新新坐标的那种
 TYPE_HOVER = ("巧智魔", "怯弱妖")           # 第二个坐标要悬停才出现的那种
 # **话术门槛**(用户定的 2026-10-16):对话框那一拍读到的**整段文字**里必须含一个
@@ -404,20 +416,36 @@ def _cut(arr, box, pad=DIALOG_PAD):
     return arr[y0:y1, x0:x1]
 
 
-def panel_frac(rgb):
-    """这块画面里"暗且不彩"的像素占比(对话框那种半透明黑面板很高)。"""
+def _dark_of(rgb):
+    """整块画面的"暗且不彩"掩码(**::2 半分辨率采样**,panel_frac / panel_box 共用)。
+
+    掩码里的 astype/max/min 是门控最贵的纯 numpy 活(900x460 的对话框带上全
+    分辨率 14ms,::2 只要 3.6ms);同一拍里 panel_frac 和 panel_box 要的正是
+    同一个东西 —— 算一遍传来传去。缩样后暗比的偏差实测 ~0.001(0.7500 对
+    0.7512),对 0.60/0.78 两道门槛的余量(假框 0.35~0.43 / 真面板 0.82~0.94)
+    毫无影响;panel_box 里用掩码切片时坐标记得 //2。
+    """
     import numpy as np
     a = np.asarray(rgb)
     if a.ndim != 3 or a.shape[2] < 3 or not a.size:
-        return 0.0
-    a = a.astype(np.int16)
+        return None
+    a = a[::2, ::2].astype(np.int16)
     mx = a.max(axis=2)
-    return float(((mx < DIALOG_DARK)
-                  & ((mx - a.min(axis=2)) < DIALOG_SAT)).mean())
+    return (mx < DIALOG_DARK) & ((mx - a.min(axis=2)) < DIALOG_SAT)
 
 
-def panel_box(rgb):
+def panel_frac(rgb):
+    """这块画面里"暗且不彩"的像素占比(对话框那种半透明黑面板很高)。"""
+    dark = _dark_of(rgb)
+    return 0.0 if dark is None else float(dark.mean())
+
+
+def panel_box(rgb, dark=None):
     """对话框那块深色面板在画面里的外接框(相对这块画面);没有返回 None。
+
+    dark:调用方同一拍里已经为 `panel_frac` 算过一次的暗掩码(见 `_dark_of`,
+    **::2 半分辨率**,切片时坐标 //2)—— 递进来就省掉这里两遍全分辨率的
+    max/min(面板开着时一轮省 25~40ms)。
 
     面板是"暗且不彩"的一整块:先在 1/4 缩略图上按**行**找"这一行里暗像素占比
     够高"的范围,再在这个范围里按**列**找。比只看整块占比多给一样东西 ——
@@ -428,16 +456,20 @@ def panel_box(rgb):
     a = np.asarray(rgb)
     if a.ndim != 3 or a.shape[2] < 3 or not a.size:
         return None
+    if dark is None:
+        dark = _dark_of(a)
+        if dark is None:
+            return None
     h, w = a.shape[:2]
     small = a[::4, ::4].astype(np.int16)
     mx = small.max(axis=2)
     mn = small.min(axis=2)
-    dark = (mx < DIALOG_DARK) & ((mx - mn) < DIALOG_SAT)
-    rows = np.nonzero(dark.mean(axis=1) >= DIALOG_DARK_FRAC)[0]
+    small_dark = (mx < DIALOG_DARK) & ((mx - mn) < DIALOG_SAT)
+    rows = np.nonzero(small_dark.mean(axis=1) >= DIALOG_DARK_FRAC)[0]
     if not rows.size:
         return None
     y0, y1 = int(rows[0]), int(rows[-1]) + 1
-    cols = np.nonzero(dark[y0:y1].mean(axis=0) >= DIALOG_DARK_FRAC)[0]
+    cols = np.nonzero(small_dark[y0:y1].mean(axis=0) >= DIALOG_DARK_FRAC)[0]
     if not cols.size:
         return None
     box = (int(cols[0]) * 4, y0 * 4,
@@ -452,9 +484,10 @@ def panel_box(rgb):
     # "夜里整条带子都暗"的假框 0.6~0.7);③**结构**:框里的亮/彩像素得挤在少数
     # 几行(那是文字),摊满所有行的是战斗画面的人/怪/血条(见 PANEL_MAX_BUSY 处
     # 的注释,两张真图实测 0.23 对 0.77)。
-    if panel_frac(a) < DIALOG_DARK_FRAC:
+    if float(dark.mean()) < DIALOG_DARK_FRAC:
         return None
-    if panel_frac(a[box[1]:box[3], box[0]:box[2]]) < PANEL_MIN_DARK:
+    if float(dark[box[1] // 2:box[3] // 2,
+                  box[0] // 2:box[2] // 2].mean()) < PANEL_MIN_DARK:
         return None
     content = ((mx[y0:y1, int(cols[0]):int(cols[-1]) + 1] >= DIALOG_BRIGHT)
                | ((mx[y0:y1, int(cols[0]):int(cols[-1]) + 1]
@@ -1085,14 +1118,31 @@ def cmd_layout(save=True) -> int:
     return 0
 
 
+_LAYOUT_CACHE = {"key": None, "data": {}}
+
+
 def load_layouts() -> dict:
-    """分辨率表:{"1022x809": {"dlg": [x0,y0,x1,y1]}};读不了返回 {}。"""
+    """分辨率表:{"1022x809": {"dlg": [x0,y0,x1,y1]}};读不了返回 {}。
+
+    按 mtime 缓存:扫描每轮要查两次表(`fixed_dialog` 的 layout_for +
+    `check_size` 的 supported_size),没必要每轮都读盘;表被 `save_layout`
+    / `--layout` 改过时 mtime 变,下一次读自然拿到新表。
+    """
     try:
-        with open(LAYOUT_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
+        key = (LAYOUT_PATH, os.path.getmtime(LAYOUT_PATH))
+    except OSError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if _LAYOUT_CACHE["key"] != key:
+        try:
+            with open(LAYOUT_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        _LAYOUT_CACHE["key"] = key
+        _LAYOUT_CACHE["data"] = data
+    return _LAYOUT_CACHE["data"]
 
 
 # 尺寸对不上时的容差:截图里的窗口矩形和 GetWindowRect 能差几个像素(实测
@@ -1154,12 +1204,12 @@ def layout_trk(size):
 
 def save_layout(size, dlg=None, trk=None):
     """把这个尺寸量到的框写进表里(读-改-写)。size 给 (宽,高) 或 "宽x高"。"""
-    data = load_layouts()
+    data = dict(load_layouts())          # 浅拷贝:别把缓存里的表就地改了
     if isinstance(size, str) and "x" in size:
         key = size
     else:
         key = f"{int(size[0])}x{int(size[1])}"
-    row = data.get(key) if isinstance(data.get(key), dict) else {}
+    row = dict(data[key]) if isinstance(data.get(key), dict) else {}
     row.pop("icons", None)    # 老版本写进去的"判进没进战斗"那格:功能已删,一起清
     if dlg:
         row["dlg"] = [int(v) for v in dlg]
@@ -1369,10 +1419,11 @@ class SlotState:
     # ---- 任务栏那侧 ----
     trk: list | None = None             # 任务栏框(来自分辨率表,相对窗口;None=没量到)
     trk_mode: TrkMode = TrkMode.NONE    # 本周期任务类型(只由对话框给,见 TrkMode)
-    trk_gap: float = TRK_GAP            # 任务栏当前节奏(秒)
+    trk_gap: float = TRK_GAP            # 任务栏当前兜底节奏(秒,item 档签名门控用)
     trk_ts: float = 0.0                 # 上次读任务栏的时刻
     trk_hist: list = field(default_factory=list)  # 最近几次任务栏读数("见过两次"用)
     trk_text: tuple | None = None       # 本周期任务栏认下来的那条
+    trk_psig: object | None = None      # 任务栏内容签名(item 档门控,None=还没读过)
     trk_last: tuple | None = None       # 最后一次任务栏值(跨周期留着,开新周期当 stale)
     trk_stale: tuple | None = None      # 屏幕上还挂着的旧行(本周期不许拿它当新目标)
     trk_pub: tuple | None = None        # 本周期任务栏报出去的那条(item 收手判据)
@@ -1380,10 +1431,9 @@ class SlotState:
     hover_warn_ts: float = 0.0          # 上次"鼠标不在框里"诊断日志的时刻
     # ---- 对话框那侧 ----
     dlg_on: bool = False                # 上一拍有没有判出对话框面板(暗比滞回用)
-    dlg_seen: bool = False              # 这块面板出现之后 OCR 过没有
     dlg_ts: float = 0.0                 # 上次读对话框的时刻
     dlg_rect: tuple | None = None       # 上次读的时候那个面板框(签名用它,别用当轮的)
-    dlg_psig: object | None = None      # 面板内容签名(定长小图,np 数组)
+    dlg_psig: object | None = None      # 面板内容签名(None=没读过/上拍没读成,下拍必读)
     dlg_bell: bool = True               # 这块面板是不是铃铛任务(不是就别按节奏重读)
     dlg_text: tuple | None = None       # 对话框认下来的目标(面板还在、字没变时沿用)
     dlg_raw: str | None = None          # 对话框这一拍读到的原文(定类型/收手话术用)
@@ -1516,7 +1566,7 @@ class BellTool(threading.Thread):
             self._no_client_note("没枚举到客户端窗口(游戏没开或最小化了?) —— 扫描暂停")
             return []
         if not want:
-            self._no_client_note("枚举到多台客户端但还没选 —— 点「自动定位」选一台")
+            self._no_client_note("枚举到多台客户端但还没选 —— 点小窗右下角的 ↻ 选一台")
             return []
         for title, box in found:
             if title == want or client_name(title) == want:
@@ -1524,7 +1574,7 @@ class BellTool(threading.Thread):
                 return [[int(v) for v in box]]
         self._no_client_note(
             f"选定的客户端「{client_name(want) or want}」不在枚举结果里 —— "
-            "扫描暂停,点「自动定位」重新选一台")
+            "扫描暂停,点小窗右下角的 ↻ 重新选一台")
         return []
 
     def _no_client_note(self, msg):
@@ -1731,12 +1781,15 @@ class BellTool(threading.Thread):
                 # **滞回**:已经在"有面板"状态时用低 0.05 的线,别让暗比在阈值边上
                 # 抖一下就把面板判没了(2026-10-17 实测:第二遍重扫撞上 0.59 vs 0.60,
                 # 新坐标就这么丢了)。
-                _pf = panel_frac(crop)          # 同一拍只算一次
+                # 暗掩码同一拍只算一次:panel_frac 要它,panel_box 的两道暗比
+                # 门槛也要它 —— 原来面板开着时一轮算三遍(每遍 13~20ms),现在一遍。
+                _dark = _dark_of(crop)
+                _pf = 0.0 if _dark is None else float(_dark.mean())
                 _thr = (DIALOG_DARK_FRAC - 0.05 if st.dlg_on
                         else DIALOG_DARK_FRAC)
                 # 暗比先算、过了门槛才去找面板框(panel_box 是门控里最贵的一步);
                 # 没面板的轮次(绝大多数)整步省掉,一拍少 4~5ms
-                tight = panel_box(crop) if _pf >= _thr else None
+                tight = panel_box(crop, dark=_dark) if _pf >= _thr else None
                 if tight:
                     box = tight
                 elif _pf >= _thr:
@@ -1745,6 +1798,7 @@ class BellTool(threading.Thread):
                     box = None
             else:
                 box = panel_box(crop)
+                _pf = panel_frac(crop)      # 不支持的分辨率(兜底路):照旧现算
             on = box is not None
             if on != st.dlg_on:
                 st.dlg_on = on
@@ -1753,7 +1807,7 @@ class BellTool(threading.Thread):
                 # 查问题时 `bell.log` 里照样有。
                 self.app.log(f"[{TAG}]对话框面板"
                              f"{'出现' if on else '消失'}"
-                             f"(暗比 {panel_frac(crop):.2f})")
+                             f"(暗比 {_pf:.2f})")
             if box:
                 self._stat["dlg"] += 1
                 # 面板里的内容一变(点 NPC 翻页)就马上重读;没变才按 DIALOG_GAP
@@ -1763,6 +1817,13 @@ class BellTool(threading.Thread):
                 psig = panel_sig(crop, st.dlg_rect or box)
                 changed = (st.dlg_psig is not None
                            and sig_diff(psig, st.dlg_psig) >= SIG_MIN)
+                # 非铃铛面板(买东西/闲聊/聊天频道)的内容一直在滚 —— 每拍都"变了",
+                # 但变的是别人的聊天,不是我们的任务。给"变了就重读"加一道最小间隔
+                # (2026-10-21 真机会话:490 秒里 267 次 OCR 全是这种白读,每次一两
+                # 百毫秒)。铃铛面板不受影响:翻页要当轮重读。
+                if (changed and not st.dlg_bell
+                        and now - st.dlg_ts < DIALOG_OTHER_GAP):
+                    changed = False
                 # 确认**不是铃铛任务**的对话框(买东西/闲聊那些):内容没变就别按
                 # 节奏重读了 —— 真机上这种占八成,每次白烧一百多毫秒。
                 due = (now - st.dlg_ts >= DIALOG_GAP
@@ -1775,7 +1836,12 @@ class BellTool(threading.Thread):
                 if (st.dlg_pend is not None
                         and now - st.dlg_ts >= 0.3):
                     due = True
-                if force or again or not st.dlg_seen or changed or due:
+                # **读不读看签名,不看"面板是不是重新出现了"**:面板暗比在阈值边上
+                # 一抖(真机日志 0.52~0.67 反复横跳),出现/消失一秒翻两三次,原来
+                # 每次"出现"都强制重读一遍 —— 字没变也白烧一整次 OCR。`dlg_psig`
+                # 是跨"面板消失"留着的(见下面 else 那段):它还在就说明这块面板读过,
+                # 内容真变了走 `changed`;None 只有两种 —— 还没读过 / 上一拍没读成。
+                if force or again or st.dlg_psig is None or changed or due:
                     # 只把面板**有字的那一截**喂给 OCR:不带身后的游戏世界,
                     # 也不带上方的任务栏(它那两行也会带坐标,混进来会被当成
                     # "对话框说的"),更不带面板下半截那片空白
@@ -1790,7 +1856,6 @@ class BellTool(threading.Thread):
                                                 limit_type=DLG_LIMIT_TYPE)
                     st.dlg_ts = now
                     if blocks is not None:
-                        st.dlg_seen = True
                         # 对话框里那句可能是"踪迹在…"也可能是"去X(x,y)使用招魂帖",
                         # 两种都算对话框说的 —— 别只取一种把招魂帖那种漏掉
                         d, t, _w = scan_bell_parts(blocks, scoped=False)
@@ -1852,18 +1917,21 @@ class BellTool(threading.Thread):
                         # 框和签名**一起**记:下一轮拿这个框算签名,形状才不会变
                         st.dlg_rect = box
                         st.dlg_psig = panel_sig(crop, box)
+                    else:
+                        # 这一拍没读成(引擎报错/回退中):当"没读过",下一拍再试
+                        st.dlg_psig = None
                 else:
                     dialog = st.dlg_text       # 面板还在、字没变:沿用上次读的
             else:
-                st.dlg_seen = False
                 st.dlg_text = None
-                st.dlg_bell = True                    # 面板没了:下次按"要读"算
+                st.dlg_bell = True               # 面板没了:兜底重读(due)重新开张
                 panel_gone = True
                 # **`dlg_pend` 别在这儿清**:面板闪一下(实测暗比 0.59 vs 阈值 0.60)
                 # 就把待确认的新坐标扔了 —— 交给下面那个 `PEND_TTL`。
                 # **签名和框留着**(别清):`panel_sig` 拿它当基准比"面板里的字变了
                 # 没有"(变了当拍就重读),框固定住还能免掉 `panel_box` 边抖 ±4px
-                # 带来的假变化。面板闪一下又回来时签名一样,不会白重读。
+                # 带来的假变化;而且它是"这块面板读过没有"的记号 —— 面板闪一下又
+                # 回来时签名一样,就不会白重读(见上面读的触发条件)。
 
         # 对话框认到了**新的目标**:**立刻马上再读一次,两遍读到同一个值才放行**
         # (用户定的 2026-10-16 傍晚:「对话框里读出了新的目标后,立刻马上再读一次,
@@ -2001,7 +2069,7 @@ class BellTool(threading.Thread):
                     self.app.log(
                         f"[{TAG}]悬停:鼠标 {tuple(int(v) for v in cur)} 不在任务栏框 "
                         f"{tuple(int(v) for v in rect)} ±{HOVER_GROW} 里 —— 这一拍不读"
-                        "(把鼠标挪进那个框;框不对就点「自动定位」重新找)")
+                        "(把鼠标挪进那个框;框不对就点小窗右下角的 ↻ 重新找)")
             else:
                 # **悬停档永远往上多留一截**(用户定的 2026-10-16 上一条):那行画在
                 # 「降妖伏魔」标题**上方**,不往上扩就永远落在裁剪之外。鼠标走近了才
@@ -2012,11 +2080,23 @@ class BellTool(threading.Thread):
                              if mode == "hover" else rect)
                 crop = self._grab(screen, crop_rect, what)
             if crop is not None:
-                # 盯着看时 0.25 秒一读(悬停那一行可能只闪一下);重试时按
-                # TRK_GAP/TRK_GAP_IDLE。**像素差分在这儿没用**:面板是半透明的,
-                # 身后世界一直在动,同一段文字相邻两帧差分就有 8~50。
+                # **item 档先过内容签名**(和对话框 panel_sig 同一套二值化采样:
+                # 面板深底让背景动不了签名):等的是"任务栏换了字" —— 变了当拍
+                # 就读,没变最多 TRK_SIG_GAP 兜底一次。**只有上一次读到了字**
+                # (`miss == 0`,面板显示着)才看签名:面板藏起来时裁的是生世界,
+                # 亮像素一直在动,签名只会每拍都"变了"。
+                # hover 档不吃这套:悬停那行在表框**上方**,裁剪又跟着鼠标走、
+                # 签名不可比 —— 保持 HOVER_GAP 的定时读(玩家主动压上去,就几秒)。
+                trk_changed = False
+                if mode == "item" and st.miss == 0:
+                    trk_sig = panel_sig(crop,
+                                        (0, 0, crop.shape[1], crop.shape[0]))
+                    trk_changed = (st.trk_psig is None
+                                   or sig_diff(trk_sig,
+                                               st.trk_psig) >= TRK_SIG_MIN)
+                    st.trk_psig = trk_sig
                 gap = st.trk_gap
-                if force or again or now - st.trk_ts >= gap:
+                if force or again or trk_changed or now - st.trk_ts >= gap:
                     blocks, ms = self._read(ocr, crop, what)
                     st.trk_ts = now
                     if blocks is not None:
@@ -2095,12 +2175,12 @@ class BellTool(threading.Thread):
                             #     0.5s 一直盯到"同一个坐标连读两次"才收手;
                             #   hover(巧智魔/怯弱妖):等鼠标压上去才冒出来的那行,
                             #     只闪一下,同样不能退避(用 HOVER_GAP)。
-                            # 一退避就可能正好漏掉它刚出现的那一下 —— 而这两种
-                            # 一读不到字就退回 1.0s、而且**整段周期都不会再调回来**,
-                            # 等于后面的等待全变慢了一倍。
+                            # 一退避就可能正好漏掉它刚出现的那一下 —— 而且这两种
+                            # 一读不到字就退回慢节奏、而且**整段周期都不会再调回来**,
+                            # 等于后面的等待全变慢了一倍。空读时签名也指望不上
+                            # (裁的是生世界),所以这里一律用"盯着看"的节奏。
                             st.miss += 1
-                            st.trk_gap = (watch_gap(mode) if mode != "none"
-                                          else TRK_GAP_IDLE)
+                            st.trk_gap = watch_gap(mode)
                             if st.miss >= TRK_MISS_MAX:
                                 # 连着这么多次"一个字都没读到":写一条诊断日志就完,
                                 # **不动那个框**(面板这会儿没显示而已)。计数归零,
@@ -2113,6 +2193,12 @@ class BellTool(threading.Thread):
                         else:
                             st.miss = 0
                             if mode == "item":
+                                # 下一拍的兜底节奏:读到**没确认的候选**就紧跟
+                                # (TRK_ITEM_GAP,两遍一致要连读);否则慢兜底 ——
+                                # 任务栏变化交给上面的内容签名盯着
+                                st.trk_gap = (watch_gap(mode)
+                                              if got and ok != got
+                                              else TRK_SIG_GAP)
                                 # 逐妖蛊虫:同一个坐标连读两次 = 新坐标到手,停。
                                 # 两个条件得分开看:
                                 #   ①值跟本周期目标不同 -> 这才是"任务栏换的新坐标";
@@ -2205,8 +2291,10 @@ class BellTool(threading.Thread):
                 st_ = self._slot.setdefault(slot, SlotState())
                 mode = trk_plan(st_.dlg_raw or "")
                 st_.trk_mode = mode
-                st_.trk_gap = (watch_gap(mode) if mode != "none"
-                               else TRK_GAP)
+                # item 平时慢兜底(变化由内容签名盯着),hover 保持 0.25s(裁剪
+                # 跟着鼠标走,签名不可比,只能定时);none 一次都不读,纯显示值
+                st_.trk_gap = (TRK_SIG_GAP if mode == "item"
+                               else watch_gap(mode))
                 st_.trk_stale = st_.trk_last
                 st_.trk_hist = []
                 st_.trk_pub = None

@@ -11,7 +11,7 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 ```bash
 # Python 用项目 venv(建法见 README)
 .venv/Scripts/pythonw.exe main.py        # 启动
-.venv/Scripts/python.exe tests.py --quiet # 回归:187 条,约 20 秒
+.venv/Scripts/python.exe tests.py --quiet # 回归:194 条,约 15 秒
 .venv/Scripts/python.exe check_shots.py   # 真机截图离线校验(docs/shots,10 张,约 7 秒)
 ```
 
@@ -33,6 +33,17 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 
 - **启动直达小窗,× 即退出**;没有主页/工具箱,`show_bell()` 就是整个入口
   (快部分建窗,慢活 `_enter_bell_slow` 排在动画起跑之后)
+- **小窗上只有四类字**:地名、坐标、角色名 + 两颗无文字圆钮(**↻ 紧跟在角色名
+  后面**,位置随名字长度走;**☀/☾ 在右下角**切深色/明亮;2026-10-21 用户选定的
+  深色 HUD A + 明亮 B 两套皮肤,选择存 `bell.ui_mode`;不出现"监听/定位"这类
+  交代程序在干什么的文案,没目标时画布上只写「暂无目标」)。别再加状态行/文字按钮
+- **网格烘在底图里**(2026-10-21 用户定的:不是运行时画线):`data/maps/傲来国.png`
+  / `朱紫国.png` = 7 列 × 5 行,`长寿村.png` = 5 列 × 7 行,其余三张不画。要改
+  格子就**重烘底图**,别在 `draw_bell` 里加线
+- **文字必须完整显示**:Tk 字号是**磅值**(20pt 在 100% 下重排成 ~41px 高),
+  所以地名行的行高**由内容撑、别写死**(写死 30px 会把字上下裁掉,用户
+  2026-10-21 报过"地图名显示不全");地名太长由 `_fit_name` 缩字号(20→12pt),
+  不许省略/截断
 - 窗口摆位 `ui/widgets.set_place`(按请求尺寸居中);`winfo_rootx/rooty`
   差一个标题栏,别拿它摆窗
 - 动效走 `pop_in/stop_anim`;顺序是死的:先 `-alpha 0` 再 `deiconify`

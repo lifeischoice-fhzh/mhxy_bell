@@ -71,6 +71,34 @@ def set_place(win, size=None, ref=None, screen=None):
     return xy
 
 
+def dark_titlebar(win, color="#0f1116"):
+    """Windows 10/11:把标题栏刷成深色(和窗口底一致);color=None = 恢复系统浅色。
+
+    不改的话是一条亮的系统标题栏压在近黑窗口上,特别突兀;切回明亮主题时得把
+    它还原成系统的白标题栏。属性不支持就静默跳过(DWM 属性号 Win10 20H1 前后
+    改过一次,两个都试)。
+    """
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        val = ctypes.c_int(0 if color is None else 1)
+        for attr in (20, 19):                 # DWMWA_USE_IMMERSIVE_DARK_MODE
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
+        if color is None:
+            # DWMWA_CAPTION_COLOR = DWMWA_COLOR_DEFAULT(0xFFFFFFFF) -> 跟随系统
+            cref = ctypes.c_int(-1)
+        else:
+            # DWMWA_CAPTION_COLOR(只 Win11 有):COLORREF = 0x00BBGGRR
+            rgb = (int(color[1:3], 16), int(color[3:5], 16),
+                   int(color[5:7], 16))
+            cref = ctypes.c_int(rgb[0] | (rgb[1] << 8) | (rgb[2] << 16))
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 35, ctypes.byref(cref), ctypes.sizeof(cref))
+    except Exception:
+        pass
+
+
 def stop_anim(win):
     """把还没跑完的动效停掉。
 
@@ -182,33 +210,82 @@ def pop_in(win, xy=None, offset=(0, POP_PX), ms=POP_MS, show=True):
     _animate(win, frames, done=done)
 
 
-# ---- 降妖伏魔小窗皮肤(按用户给的梦幻西游客户端截图对齐,2026-10-21) ----
-# 深靛蓝半透明面板 + 米白正文 + 亮黄数值 + 砖红圆角按钮(「确认加点/升级/技能」
-# 那排)+ 地图框金边。字体用宋体 —— 客户端的 UI 字就是位图宋体的观感。
-# Tk 给不了圆角,按钮/牌子这些圆角外形是**用 PIL 现画成图**再塞进 ttk 的
-# (`_round_img` / `_btn_images`,以及给 ui/bell.py 用的 `bell_image()`)。
+# ---- 降妖伏魔小窗皮肤:两套(2026-10-21 用户选的 A 深色 / B 明亮) ----
+# A=深色 HUD(默认):单面色板,**没有卡片套卡片**,地图就是主体,金色只给坐标,
+# 红色只给红点。B=明亮:同样的版面,白底深字,坐标用近黑。
+# 小字用雅黑(宋体在 10px 会糊),坐标用等宽数字(位数一眼对齐)。
+# 界面上不出现"监听/定位"这类交代程序在干什么的文案(用户定的 2026-10-21)。
+# Tk 给不了圆角,按钮/小牌这些圆角外形是**用 PIL 现画成图**再塞进 ttk 的
+# (`_round_img` / `_btn_images` / `_icon_images`)。
 # **样式名一律带 `Bell` 前缀**,不会跟别处的 ttk 样式撞名。
-BELL_SKIN = {
-    "bg": "#141830",          # 窗口底:深靛蓝
-    "card": "#20264c",        # 面板:深靛蓝(游戏半透明面板的近似色)
-    "btn": "#c05a50",         # 按钮:砖红(「确认加点」那排的圆角钮)
-    "paper": "#10142c",       # 画布底:比面板更深一档
-    "line": "#6a6fae",        # 冷紫细边(面板描边)
-    "gold": "#e0b95c",        # 金:地图框/坐标牌描边
-    "gold_txt": "#2a1c06",
-    "green": "#a4e05a",       # 亮绿:强调(抽屉小标题)
-    "jade": "#57c98b",        # 草绿:肯定态高亮(BellAccent.TButton)
-    "red": "#ff6a52",         # 珊瑚红:异常提示
-    "yellow": "#ffe37a",      # 亮黄:数值
-    "txt": "#f2eede",         # 米白正文(游戏正文色)
-    "sub": "#9aa2cc",         # 次要灰紫
-    "stroke": "#0a0e1e",      # 字的深色描边(游戏里的字都有)
-    "font": "宋体",           # 客户端的位图宋体观感
-    "font_big": "宋体",       # 大字坐标:同字体 + 黑描边(游戏数值的样子)
+BELL_SKINS = {
+    "a": {
+        "bg": "#0f1116",          # 窗口底:近黑
+        "card": "#0f1116",        # 单面色(抽屉/弹窗也拿它当底)
+        "paper": "#0b0d12",       # 画布底:比窗口再深一档
+        "line": "#232936",        # 分隔线/细边
+        "btn": "#20242e",         # 按钮底
+        "btn_line": "#333a4a",
+        "gold": "#f0c05a",        # 金:坐标(全窗唯一强调色)
+        "gold_line": "#b8933f",
+        "gold_txt": "#1a1206",
+        "green": "#5fd18a",       # 亮绿:强调(抽屉小标题)
+        "jade": "#57c98b",        # 草绿:肯定态高亮(BellAccent.TButton)
+        "jade_line": "#2e7d55",
+        "red": "#ff6a52",         # 珊瑚红:异常提示
+        "yellow": "#f0c05a",      # 同金:数值
+        "dot": "#ff3b30",         # 红点
+        "dot_ring": "#ffffff",
+        "txt": "#e9ecf2",         # 主文字
+        "sub": "#7d8798",         # 次要灰
+        "stroke": "#0a0e1e",      # 字的深色描边(PIL 画字时用)
+        "titlebar": "#0f1116",    # 标题栏(深色模式下强制刷成同色)
+        "font": "Microsoft YaHei UI",
+        "font_big": "Microsoft YaHei UI",
+        "font_num": "Consolas",   # 坐标:等宽数字
+    },
+    "b": {
+        "bg": "#ffffff",          # 窗口底:白
+        "card": "#ffffff",
+        "paper": "#f2f4f7",       # 画布底:浅灰(没图时看得出这块是画布)
+        "line": "#e4e7ec",
+        "btn": "#f4f5f7",
+        "btn_line": "#dfe3e9",
+        "gold": "#111827",        # 坐标:近黑(明亮模式下不用金色)
+        "gold_line": "#c7ccd4",
+        "gold_txt": "#ffffff",
+        "green": "#16a34a",
+        "jade": "#16a34a",
+        "jade_line": "#14803c",
+        "red": "#dc2626",
+        "yellow": "#111827",
+        "dot": "#ef4444",
+        "dot_ring": "#ffffff",
+        "txt": "#141922",
+        "sub": "#6b7280",
+        "stroke": "#ffffff",
+        "titlebar": None,         # None = 恢复系统标题栏(白)
+        "font": "Microsoft YaHei UI",
+        "font_big": "Microsoft YaHei UI",
+        "font_num": "Consolas",
+    },
 }
+_BELL_MODE = "a"              # 当前生效的模式("a" 深色 / "b" 明亮)
 
 _BELL_TK = None               # 皮肤是"每个 Tk 解释器一份"的(测试会新建 root)
 _BELL_IMGS = {}               # PIL 画的圆角图:得留引用,不然被 GC 掉图就没了
+_BELL_ELEMS = set()           # 这个解释器里已经建过的 ttk 元素(两种模式各一套)
+_BELL_APPLIED = None          # 当前已经生效的模式(None = 还没配过)
+
+
+def bell_palette(mode=None):
+    """取一套色板(mode 不给就取当前生效的)。"""
+    return BELL_SKINS.get(mode or _BELL_MODE, BELL_SKINS["a"])
+
+
+def current_mode():
+    """当前生效的皮肤模式("a" 深色 / "b" 明亮)。"""
+    return _BELL_MODE
 
 
 def _round_pil(w, h, radius, fill, outline, width=3, gloss=None):
@@ -250,17 +327,6 @@ def _bell_imgs():
     return _BELL_IMGS
 
 
-def _bell_pil_font(kind, size):
-    """挑一个字体文件给 PIL(PIL 只认文件,给家族名找不到)。"""
-    from PIL import ImageFont
-    for path in BELL_FONT_FILES.get(kind, ()):
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-
 def _shade(color, k):
     r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
     return "#%02x%02x%02x" % tuple(max(0, min(255, v + k)) for v in (r, g, b))
@@ -269,115 +335,158 @@ def _shade(color, k):
 def _btn_images(fill, outline, gloss=(255, 255, 255, 95)):
     """一个按钮的**三态**圆角图:常态 / 悬停(亮一点)/ 按下(暗一点)。"""
     return [_round_img(96, 40, 14, _shade(fill, k), outline, 3, gloss)
-            for k in (0, 18, -24)]
+            for k in (0, 16, -20)]
 
 
 def bell_image(kind, w, h):
-    """给 ui/bell.py 用的圆角底图(带缓存):plaque=金标题牌,chip=小圆牌。"""
+    """给 ui/bell.py 抽屉小标题用的圆角底图(带缓存的 PhotoImage)。"""
     from PIL import ImageTk
     imgs = _bell_imgs()
-    key = (kind, w, h)
+    key = (current_mode(), kind, w, h)
     got = imgs.get(key)
     if got is not None:
         return got
-    c = BELL_SKIN
-    if kind == "plaque":
-        img = _round_pil(w, h, 16, c["gold"], "#8a6a24", 3,
-                         (255, 255, 255, 110))
-    else:                                    # "chip":小圆牌(抽屉小标题)
-        img = _round_pil(w, h, 13, c["card"], c["line"], 2, None)
-    out = ImageTk.PhotoImage(img)
+    c = bell_palette()
+    out = ImageTk.PhotoImage(
+        _round_pil(w, h, 13, c["card"], c["line"], 1, None))
     imgs[key] = out
     return out
 
 
-# PIL 要字体**文件**,给家族名它找不到。客户端的 UI 字是位图宋体的观感
-# (用户定的 2026-10-21),所以两档都走 simsun;机器上没有就顺着往下退,
-# 最后退到 PIL 自带点阵字。
-BELL_FONT_FILES = {
-    "font_big": ("C:/Windows/Fonts/simsun.ttc", "C:/Windows/Fonts/msyh.ttc"),
-    "font": ("C:/Windows/Fonts/simsun.ttc", "C:/Windows/Fonts/msyh.ttc"),
-}
+def _icon_pil(fill, outline, fg, glyph, size=28):
+    """圆形图标按钮:灰底圆 + 一个字形(↻ 换客户端 / ☀ 切明亮 / ☾ 切深色)。"""
+    from PIL import ImageDraw, ImageFont
+    img = _round_pil(size, size, size // 2, fill, outline, 1, None)
+    d = ImageDraw.Draw(img)
+    font = None
+    for path in ("C:/Windows/Fonts/seguisym.ttf",
+                 "C:/Windows/Fonts/msyh.ttc"):
+        try:
+            font = ImageFont.truetype(path, 14)
+            break
+        except Exception:
+            continue
+    if font is not None:
+        d.text((size // 2, size // 2 - 1), glyph, font=font, fill=fg,
+               anchor="mm")
+    else:                                    # 一个字体都没有:画个圈
+        d.arc([8, 8, size - 8, size - 8], 40, 300, fill=fg, width=2)
+    return img
 
 
-def bell_coord(text, w=424, h=68, size=32):
-    """坐标牌 = **圆角深色牌 + 一行带黑边的亮黄大字**(合成一张图,Label 直接用)。
+def _icon_images(glyph, palette):
+    """图标按钮的**三态**图(常态 / 悬停 / 按下)。"""
+    from PIL import ImageTk
+    c = palette
+    return [ImageTk.PhotoImage(
+        _icon_pil(_shade(c["btn"], k), c["btn_line"],
+                  c["txt"] if k >= 0 else c["sub"], glyph))
+        for k in (0, 16, -20)]
 
-    为什么不拆成"图 + 文字":游戏里的字是"白字黑边",Tk 画不出描边,只能整张画。
-    字一变就得重画(调用点 `ui/bell.set_coord`)。缓存只留最近一张 —— 每换一个
-    目标就是一张新图,留着不放会越积越多。
+
+_BTN_SPECS = (                # (样式名, 元素标签, 底色, 描边, 字色, 高光, 内边距)
+    ("Bell.TButton", "Btn", "btn", "btn_line", "txt", (255, 255, 255, 26),
+     (16, 0), 14),
+    ("BellGold.TButton", "Gold", "gold", "gold_line", "gold_txt",
+     (255, 255, 255, 110), (16, 0), 14),
+    ("BellAccent.TButton", "Accent", "jade", "jade_line", "gold_txt",
+     (255, 255, 255, 70), (16, 0), 14),
+    ("BellGhost.TButton", "Ghost", "btn", "btn_line", "sub", None,
+     (16, 0), 14),
+)
+_ICON_SPECS = (               # (样式名, 元素标签, 字形:显示"切过去"的那个模式)
+    ("BellIcon.TButton", "Icon", None),        # ↻:换客户端,两种模式都一样
+    ("BellTheme.TButton", "Theme", {"a": "☀", "b": "☾"}),
+)
+
+
+def apply_bell_skin(mode=None):
+    """配好降妖伏魔小窗的样式(幂等),返回**当前模式**的调色板。
+
+    mode="a" 深色 / "b" 明亮;不给就沿用上一次生效的模式。
+    两种模式的 ttk 元素都在第一次调用时建好(各一套图),之后切换只改
+    `style.layout(...)` 指向哪一套 + `style.configure(...)` 的颜色 —— 控件不用重建。
+    `ttk` 的元素和图片都是**按 Tk 解释器**存的,新建 root 会重建一遍(测试里多个 App)。
     """
-    from PIL import ImageDraw, ImageTk
-    c = BELL_SKIN
-    imgs = _bell_imgs()
-    key = ("coord", text, w, h, size)
-    got = imgs.get(key)
-    if got is not None:
-        return got
-    for k in [k for k in imgs if k[0] == "coord"]:
-        imgs.pop(k, None)                    # 上一张坐标图没人用了,扔掉
-    img = _round_pil(w, h, 22, c["paper"], c["gold"], 3, (255, 255, 255, 34))
-    ImageDraw.Draw(img).text(
-        (w // 2, h // 2), text, font=_bell_pil_font("font_big", size),
-        fill=c["yellow"], anchor="mm", stroke_width=max(2, size // 12),
-        stroke_fill=c["stroke"])
-    out = ImageTk.PhotoImage(img)
-    imgs[key] = out
-    return out
-
-
-def apply_bell_skin():
-    """配好降妖伏魔小窗那套客户端风样式(幂等),返回调色板。
-
-    调用点在 `ui/bell.py:build_bell`(**建控件之前**)。样式名一律 `Bell*`,
-    不会跟别处的 ttk 样式撞名。`ttk` 的元素和图片都是**按 Tk 解释器**存的,
-    新建 root 会重建一遍(测试里跑多个 App)。
-    """
-    global _BELL_TK, _BELL_IMGS
+    global _BELL_TK, _BELL_IMGS, _BELL_MODE, _BELL_APPLIED
     from tkinter import ttk
-    c = BELL_SKIN
+    if mode in BELL_SKINS:
+        _BELL_MODE = mode
+    c = bell_palette()
     ui_font = c["font"]
     style = ttk.Style()
+    if _BELL_TK is style.tk and _BELL_APPLIED == _BELL_MODE:
+        return dict(c)              # 同一套已经配过:别每次重画图片(Tk 调用很贵)
     try:
         style.theme_use("clam")
     except Exception:
         pass
     if _BELL_TK is not style.tk:
         _BELL_TK, _BELL_IMGS = style.tk, {}
-        # 圆角按钮:自造一个"图片底"元素(ttk 的 9 宫格拉伸),再套回标准按钮布局 ——
-        # 这样 `winfo_class()` 还是 TButton,`cget("text")` / `invoke()` 全照旧能用。
-        for name, fill, outline, fg, gloss in (
-                ("Bell.TButton", c["btn"], "#6e2a24", "#ffffff",
-                 (255, 255, 255, 70)),
-                ("BellGold.TButton", c["gold"], "#8a6a24", c["gold_txt"],
-                 (255, 255, 255, 120)),
-                ("BellAccent.TButton", c["jade"], "#2e7d55", "#ffffff",
-                 (255, 255, 255, 90)),
-                ("BellGhost.TButton", "#1b2f44", "#33506b", c["sub"],
-                 None)):
-            el = name.replace(".", "_")
-            try:
-                # **图片得自己留着引用**:Tk 图没人持有就销毁,样式元素会指向空图
-                # (表现是按钮突然退回"没底色的文字",第一次渲染时还看不出来)。
-                imgs = _btn_images(fill, outline, gloss)
-                _BELL_IMGS[("btn", name)] = imgs
-                style.element_create(el, "image", *imgs, border=14,
-                                     sticky="nswe")
-                style.layout(name, [(el, {"sticky": "nswe", "children": [
-                    ("Button.padding", {"sticky": "nswe", "children": [
-                        ("Button.label", {"sticky": "nswe"})]})]})])
-            except Exception:
-                pass                          # 这个解释器里已经配过了
-            style.configure(name, background=fill, foreground=fg,
-                            borderwidth=0, focusthickness=0,
-                            font=(ui_font, 10, "bold"), padding=(18, 6))
+        _BELL_ELEMS.clear()
+        _BELL_APPLIED = None
+
+    def _ensure(el, imgs, border):
+        """建一次图片元素;已经建过就跳过(元素名按模式分开,互不覆盖)。"""
+        if el in _BELL_ELEMS:
+            return True
+        try:
+            # 状态图要写成 (状态, 图) —— 顺序反了会报 "Invalid state name",
+            # 直接被 except 吞掉,按钮就退回方角纯色块(踩过)。
+            style.element_create(el, "image", imgs[0], ("active", imgs[1]),
+                                 ("pressed", imgs[2]), border=border,
+                                 sticky="nswe")
+            _BELL_ELEMS.add(el)
+            return True
+        except Exception:
+            return False
+
+    def _layout(name, el):
+        style.layout(name, [(el, {"sticky": "nswe", "children": [
+            ("Button.padding", {"sticky": "nswe", "children": [
+                ("Button.label", {"sticky": "nswe"})]})]})])
+
+    # 两种模式的图片元素都建好(切模式时只换指向,不重建)
+    for m, pal in BELL_SKINS.items():
+        for name, tag, fill_k, line_k, fg_k, gloss, _pad, border in _BTN_SPECS:
+            key = f"Bell{tag}_{m}"
+            if key in _BELL_ELEMS:
+                continue
+            imgs = [_round_img(96, 40, 14, _shade(pal[fill_k], k), pal[line_k],
+                               3, gloss) for k in (0, 16, -20)]
+            # **图片得自己留着引用**:Tk 图没人持有就销毁,样式元素会指向空图。
+            _BELL_IMGS[("btn", key)] = imgs
+            _ensure(key, imgs, border)
+        for name, tag, glyphs in _ICON_SPECS:
+            key = f"Bell{tag}_{m}"
+            if key in _BELL_ELEMS:
+                continue
+            imgs = _icon_images(glyphs[m] if glyphs else "↻", pal)
+            _BELL_IMGS[("btn", key)] = imgs
+            _ensure(key, imgs, 10)
+
+    # 把样式指向当前模式那套元素,并配上颜色
+    for name, tag, fill_k, line_k, fg_k, gloss, pad, border in _BTN_SPECS:
+        el = f"Bell{tag}_{_BELL_MODE}"
+        _layout(name, el)
+        # background 用窗口底色:圆角图的四个角是透明的,露出来的就是它。
+        # 填按钮自己的颜色的话,方块底会在圆角外面显形(踩过)。
+        style.configure(name, background=c["bg"], foreground=c[fg_k],
+                        borderwidth=0, focusthickness=0,
+                        font=(ui_font, 10, "bold"), padding=pad)
+    # 无文字的圆形图标按钮(28x28):没有内边距,字号压到 1pt ——
+    # 空标签会按 TkDefaultFont 的行高把按钮撑成 28x40,圆角图跟着纵向拉伸。
+    for name, tag, _glyphs in _ICON_SPECS:
+        el = f"Bell{tag}_{_BELL_MODE}"
+        _layout(name, el)
+        style.configure(name, background=c["bg"], borderwidth=0,
+                        focusthickness=0, padding=(0, 0), font=(ui_font, 1))
     style.configure("Bell.TFrame", background=c["card"])
     style.configure("Bell.TLabel", background=c["card"], foreground=c["txt"],
                     font=(ui_font, 10))
     style.configure("BellSection.TLabel", background=c["card"],
                     foreground=c["green"], font=(ui_font, 11, "bold"))
-    style.configure("BellHint.TLabel", background=c["card"],
-                    foreground=c["sub"], font=(ui_font, 9))
     style.configure("BellFoot.TLabel", background=c["card"],
                     foreground=c["sub"], font=(ui_font, 8))
+    _BELL_APPLIED = _BELL_MODE
     return dict(c)

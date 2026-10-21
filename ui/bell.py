@@ -1,97 +1,157 @@
-"""降妖伏魔小窗:妖魔位置大字 + 底图红点(客户端同款:深靛蓝面板 + 金字 + 宋体)。
+"""降妖伏魔小窗:地名 + 坐标 + 底图红点(深色 HUD,2026-10-21 用户选的 A 方案)。
+
+界面只有四样东西:地名、坐标、地图上的红点、角色名。**不出现"监听/定位"这类
+交代程序在干什么的文案**(用户定的 2026-10-21):换客户端收成右下角一个无文字的
+↻;没有目标时画布上只写「暂无目标」。坐标用等宽数字(位数对齐),地名用雅黑。
 
 build_bell 只建控件;draw_bell 只碰画布(底图缩放/红点按 tools.bell 的标定算,
 方向 ui→tools,允许);抽屉只摆控件,动作都回到 App(app.on_map_import /
 app.on_map_btn / app.on_map_detail)。**采集只是从界面移除**(用户定的
 2026-10-20,底图内置):抽屉控件与回调全保留,要开放时把「地图采集」按钮
-加回去、command 指回 on_map_import 就行。日志区已整个撤掉(2026-10-21),
-日志只进 bell.log。皮肤见 ui/widgets.apply_bell_skin(配色/字体对齐客户端)。
-扫描范围全自动:客户端窗口自动定位,不支持的分辨率由 gui 弹窗提醒。
+加回去、command 指回 on_map_import 就行。日志只进 bell.log。
 """
+import re
+
 from tools import bell as tools_bell
 from ui import widgets as ui_widgets
 
 # ---- 降妖伏魔小窗 ----
-BELL_W, BELL_H = 400, 280           # 底图画布尺寸(卡片宽度跟着它走)
+PAD = 14                            # 窗口左右留白(地图 400 + 两边 14)
+MAP_W = 400                         # 地图宽固定;高度按底图长宽比算,不写死
+MAP_H = 199                         # 没有底图/没目标时的兜底高度(2:1)
+NAME_PT, NAME_MIN_PT = 20, 12       # 地名字号(磅);太长就往下缩,缩到这么多为止
+NUM_PT = 22                         # 坐标字号(磅)
 DRAWER_W = 300                      # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
 DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
 
 
 def set_coord(app, text):
-    """重画坐标那行(**圆角牌 + 白字黑边**,见 `ui_widgets.bell_coord`)。
+    """把「地名 + 坐标」写进头部两行(纯控件更新,不动任何扫描状态)。
 
-    纯控件更新:不动任何扫描状态。图片挂在 app 上留引用(Tk 图没人持有会被回收)。
-    调用点:`build_bell`(建控件时)和 `gui._drain_logs`(`bell_var.set` 之后各一次)。
+    text 是 `BellTool.target` 的原文("建邺城 (34,91)");拆成一左一右两个控件,
+    一眼看得出"哪张图、哪一格"。调用点:`build_bell` 和 `gui._drain_logs`
+    (`bell_var.set` 之后各一次)。
     """
-    lbl = getattr(app, "bell_coord", None)
-    if lbl is None or not lbl.winfo_exists():
+    app.bell_coord_text = text or ""    # 记下当前显示的原文(测试/排查用)
+    name, x, y = _split_target(app.bell_coord_text)
+    lbl = getattr(app, "bell_name", None)
+    num = getattr(app, "bell_coord", None)
+    if lbl is not None and lbl.winfo_exists():
+        lbl.configure(text=name or "")
+    if num is not None and num.winfo_exists():
+        num.configure(text="" if x is None else f"{x}, {y}")
+    _fit_name(app)
+
+
+def _fit_name(app):
+    """地名太长就缩字号,保证**整串都显示出来**(不省略、不截断)。
+
+    字号是磅值,20pt 在 100% 下重排成四十来像素高 —— 行高必须由控件自己撑,
+    别写死(写死 30px 就会把字上下裁掉,用户 2026-10-21 报"地图名显示不全")。
+    横向也在这里兜:地名 + 坐标 + 间距超过窗口宽就一级级缩地名,缩到 12pt 为止。
+    """
+    lbl = getattr(app, "bell_name", None)
+    num = getattr(app, "bell_coord", None)
+    if lbl is None or num is None:
         return
-    img = ui_widgets.bell_coord(text or "")
-    app.bell_coord_img = img
-    app.bell_coord_text = text or ""        # 记下当前显示的字(测试/排查用)
-    lbl.configure(image=img)
+    c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
+    try:
+        import tkinter.font as tkfont
+        avail = MAP_W - 16                       # 给"地名 / 坐标"之间留条缝
+        num_w = tkfont.Font(font=(c["font_num"], NUM_PT)).measure(
+            num.cget("text"))
+        size = NAME_PT
+        while size > NAME_MIN_PT:
+            if tkfont.Font(font=(c["font"], size)).measure(
+                    lbl.cget("text")) + num_w <= avail:
+                break
+            size -= 1
+        lbl.configure(font=(c["font"], size))
+    except Exception:
+        pass
+
+
+def _split_target(text):
+    """「建邺城 (34,91)」-> ("建邺城", 34, 91);拆不开就整串当地名。"""
+    m = re.match(r"^(.*?)\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*$", text or "")
+    if not m:
+        return (text or "").strip(), None, None
+    return m.group(1).strip(), int(m.group(2)), int(m.group(3))
 
 
 def build_bell(app):
-    """建降妖伏魔小窗(app.bell_win / bell_var / bell_canvas / bell_drawer ...)。"""
+    """建降妖伏魔小窗(app.bell_win / bell_name / bell_coord / bell_locate_btn)。
+
+    版面从上到下只有四块:地名行、地图、底行(角色名 + ☀/☾ + ↻)。没有卡片、
+    没有金框、没有状态行 —— 地图就是主体。皮肤模式(app.bell_mode)从配置读。
+    """
     import tkinter as tk
     from tkinter import ttk
 
-    c = ui_widgets.apply_bell_skin()
-    BG, CARD = c["bg"], c["card"]
-    LINE, PAPER, GOLD = c["line"], c["paper"], c["gold"]
-    FONT = c["font"]
+    mode = str(app._get("ui_mode", "a") or "a")
+    c = ui_widgets.apply_bell_skin(mode)
+    app.bell_mode = ui_widgets.current_mode()
+    BG, TXT, SUB, GOLD, PAPER = (c["bg"], c["txt"], c["sub"], c["gold"],
+                                 c["paper"])
 
     app.bell_win = tk.Toplevel(app.root)
     app.bell_win.title("降妖伏魔 · 妖魔位置")
     app.bell_win.configure(bg=BG)
     app.bell_win.attributes("-topmost", True)
     app.bell_win.resizable(False, False)
+    # 标题栏颜色:**窗口真正显示出来以后**再设才生效(建窗那一下设了会被系统盖回去),
+    # 所以除了现在试一次,每次 <Map>(显示/重新显示)都再刷一遍。
+    ui_widgets.dark_titlebar(app.bell_win, c["titlebar"])
+    app.bell_win.bind(
+        "<Map>", lambda _e: ui_widgets.dark_titlebar(
+            app.bell_win, ui_widgets.bell_palette(app.bell_mode)["titlebar"]))
 
     body = tk.Frame(app.bell_win, bg=BG)      # 卡片在左,抽屉在右
     body.pack(fill="both", expand=True)
     app.bell_body = body
 
-    # 卡片高度由内容定(写死高度会把底下的按钮裁掉),宽度由 400px 画布定;
-    # 2px 冷色细边 = 游戏面板那圈边(金留给地图框)。side="left" 是给右侧抽屉
-    # 留的位置(toggle_drawer 往右拉,窗口随之拉宽)
-    card = tk.Frame(body, bg=CARD, highlightthickness=2,
-                    highlightbackground=LINE)
-    card.pack(side="left", padx=(12, 0), pady=(12, 10))
+    # 地名行:地名在左、坐标在右。**行高让内容撑**(字号是磅值,写死高度会把字裁掉)
+    head = tk.Frame(body, bg=BG)
+    head.pack(fill="x", padx=PAD, pady=(12, 10))
+    head.columnconfigure(0, weight=1)
+    app.bell_head = head
+    app.bell_var = tk.StringVar(value="")
+    app.bell_coord_text = ""
+    app.bell_name = tk.Label(head, text="", bg=BG, fg=TXT, anchor="w",
+                             font=(c["font"], NAME_PT))
+    app.bell_name.grid(row=0, column=0, sticky="w")
+    app.bell_coord = tk.Label(head, text="", bg=BG, fg=GOLD, anchor="e",
+                              font=(c["font_num"], NUM_PT))
+    app.bell_coord.grid(row=0, column=1, sticky="e")
+    set_coord(app, "")
 
-    # 坐标:深色圆角牌上压一行**带黑边的亮黄大字**(游戏数值的样子;
-    # Tk 画不出描边,这张字图是 PIL 画的,字一变就重画 —— 见 `set_coord`)
-    app.bell_var = tk.StringVar(value="等待铃铛任务提示…")
-    app.bell_coord_img = None
-    app.bell_coord = tk.Label(card, bg=CARD, bd=0, highlightthickness=0)
-    app.bell_coord.pack(padx=12, pady=(10, 8))
-    set_coord(app, app.bell_var.get())
+    # 地图:没有框、没有金边 —— 图本身就是主体,红点直接压在图上
+    app.bell_canvas = tk.Canvas(body, width=MAP_W, height=MAP_H, bg=PAPER,
+                                highlightthickness=0, bd=0)
+    app.bell_canvas.pack(padx=PAD)
 
-    # 地图:外面套一圈金框(游戏里地图窗也是金边)
-    shot = tk.Frame(card, bg=GOLD)
-    shot.pack(padx=12)
-    app.bell_canvas = tk.Canvas(shot, width=BELL_W, height=BELL_H,
-                                bg=PAPER, highlightthickness=0)
-    app.bell_canvas.pack(padx=3, pady=3)
-    # 只在"没底图/读不了/等坐标"这类状态下才写字,平时是空的
-    app.bell_hint = ttk.Label(card, text="", style="BellHint.TLabel",
-                              anchor="center")
-    app.bell_hint.pack(fill="x", padx=16, pady=(6, 8))
-
-    # 底下就一颗「自动定位」(游戏「确认加点」那排的砖红圆角钮):定位到哪台
-    # 客户端,按钮上就写它的角色名;没定位到还是「自动定位」。**宽度随文字走**
-    # (写死宽度会把长角色名挤到贴边/显示不全),两边留出余量。监听常开(没有
-    # 开关按钮)、日志区已撤(2026-10-21)、采集入口已撤 —— 界面上就不摆它们。
-    locate_txt = tools_bell.client_name(
-        str(app._get("bell_client", "") or "")) or "自动定位"
-    app.bell_locate_btn = ttk.Button(card, text=locate_txt,
-                                     style="Bell.TButton",
+    # 底行:左边「角色名 + 紧跟的 ↻(换客户端)」,右下角「☀/☾(切主题)」。
+    # 从左往右 pack:角色名只占文字的宽度,↻ 自动跟在它后面 —— 名字多长,按钮
+    # 就跟到哪(不用算 x);☀/☾ 先从右边占位,名字再长也挤不掉它。
+    foot = tk.Frame(body, bg=BG)
+    foot.pack(fill="x", padx=PAD, pady=(12, 12))
+    app.bell_foot = foot
+    app.bell_theme_btn = ttk.Button(foot, text="", width=0,
+                                    style="BellTheme.TButton",
+                                    command=app.on_toggle_theme)
+    app.bell_theme_btn.pack(side="right")
+    app.bell_client_lbl = tk.Label(foot, text="", bg=BG, fg=SUB, anchor="w",
+                                   font=(c["font"], 10))
+    app.bell_client_lbl.pack(side="left")
+    # width=0:按 28x28 的图走自然尺寸(不写这行,ttk 会按主题默认宽 77px 摆)
+    app.bell_locate_btn = ttk.Button(foot, text="", width=0,
+                                     style="BellIcon.TButton",
                                      command=app.on_locate_clients)
-    app.bell_locate_btn.pack(pady=(6, 14), padx=24)
+    app.bell_locate_btn.pack(side="left", padx=(8, 0))
 
     # ---- 右侧抽屉(采集的界面入口已撤,控件照建:开抽屉走 `toggle_drawer`) ----
-    app.bell_drawer = tk.Frame(body, bg=CARD, highlightthickness=3,
-                               highlightbackground=LINE,
+    app.bell_drawer = tk.Frame(body, bg=BG, highlightthickness=1,
+                               highlightbackground=c["line"],
                                width=DRAWER_W)
     app.bell_drawer.pack_propagate(False)
     app.bell_drawer_open = False
@@ -264,8 +324,37 @@ def toggle_drawer(app):
         refresh_drawer(app)
 
 
+def apply_theme(app, mode=None):
+    """切换深色 / 明亮:重配样式,再把 tk 控件的颜色换掉(ttk 按钮靠样式自动变)。
+
+    只改颜色,不重建窗口 —— 版面、尺寸、位置都不动。调用点:
+    `gui.App.on_toggle_theme`(底行那颗 ☀/☾)。
+    """
+    c = ui_widgets.apply_bell_skin(mode)
+    app.bell_mode = ui_widgets.current_mode()
+    win = getattr(app, "bell_win", None)
+    if win is None or not win.winfo_exists():
+        return
+    win.configure(bg=c["bg"])
+    for name in ("bell_body", "bell_head", "bell_foot", "bell_drawer"):
+        f = getattr(app, name, None)
+        if f is not None and f.winfo_exists():
+            f.configure(bg=c["bg"])
+    try:
+        app.bell_drawer.configure(highlightbackground=c["line"])
+    except Exception:
+        pass
+    app.bell_name.configure(bg=c["bg"], fg=c["txt"])
+    app.bell_coord.configure(bg=c["bg"], fg=c["gold"])
+    app.bell_client_lbl.configure(bg=c["bg"], fg=c["sub"])
+    app.bell_canvas.configure(bg=c["paper"])
+    ui_widgets.dark_titlebar(win, c["titlebar"])
+    app._bell_spot = object()          # 逼重画:画布底/文字色/红点都要跟着换
+    draw_bell(app)
+
+
 def draw_bell(app):
-    """把当前妖魔位置画到底图上(没有底图就只放大字坐标)。"""
+    """把当前妖魔位置画到底图上;画布高度跟着底图长宽比走(不留死带)。"""
     c = getattr(app, "bell_canvas", None)
     if c is None or not c.winfo_exists():
         return
@@ -274,21 +363,18 @@ def draw_bell(app):
         return
     c.delete("all")
     app._bell_spot = spot
-    sk = ui_widgets.apply_bell_skin()
+    sk = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
     if not spot:
-        c.create_text(BELL_W // 2, BELL_H // 2, text="等待铃铛任务提示",
+        _set_map_h(app, MAP_H)
+        c.create_text(MAP_W // 2, MAP_H // 2, text="暂无目标",
                       fill=sk["sub"], font=(sk["font"], 12))
-        app.bell_hint.configure(text="")
         return
     name, x, y = spot
     path = tools_bell.map_asset(name)
     if not path:
-        c.create_text(BELL_W // 2, BELL_H // 2,
-                      text=(f"{name}\n{x}, {y}" if x is not None else name),
-                      fill=sk["yellow"], justify="center",
-                      font=(sk["font_big"], 22))
-        app.bell_hint.configure(text=f"内置底图缺「{name}」"
-                                     "(data/maps 里没有这张)")
+        _set_map_h(app, MAP_H)
+        c.create_text(MAP_W // 2, MAP_H // 2, text=f"缺「{name}」底图",
+                      fill=sk["sub"], font=(sk["font"], 12))
         return
     try:
         import os
@@ -299,36 +385,63 @@ def draw_bell(app):
         got = getattr(app, "_bell_base", None)
         if not got or got[0] != key:
             img = Image.open(path).convert("RGB")
-            ratio = min(BELL_W / img.width, BELL_H / img.height)
-            disp = img.resize((max(1, int(img.width * ratio)),
-                               max(1, int(img.height * ratio))), Image.LANCZOS)
+            # 宽度定死 400,高度由底图长宽比决定 —— 写死高度会在上下留死带
+            ratio = MAP_W / float(img.width)
+            disp = img.resize((MAP_W, max(1, round(img.height * ratio))),
+                              Image.LANCZOS)
             got = (key, ImageTk.PhotoImage(disp), ratio, disp.width,
                    disp.height, img.size)
             app._bell_base = got
             app._bell_base_photo = got[1]      # Tk 的图得留引用,别被回收
         _k, photo, ratio, dw, dh, src = got
+        _set_map_h(app, dh)
         app._bell_photo = photo
-        ox = (BELL_W - dw) // 2
-        oy = (BELL_H - dh) // 2
-        c.create_image(ox, oy, image=photo, anchor="nw")
+        c.create_image(0, 0, image=photo, anchor="nw")
         if x is None or y is None:
-            app.bell_hint.configure(text="")   # 只有图没坐标:什么也不画、也不写字
-            return
+            return                             # 只有图没坐标:什么也不画
         fx, fy = tools_bell.map_pixel(name, x, y)
-        dx = min(max(ox + fx * ratio, ox), ox + dw)
-        dy = min(max(oy + fy * ratio, oy), oy + dh)
-        if not (ox <= ox + fx * ratio <= ox + dw
-                and oy <= oy + fy * ratio <= oy + dh):
+        px_, py_ = fx * ratio, fy * ratio
+        if not (0 <= px_ <= dw and 0 <= py_ <= dh):
             # 夹边这事儿不能悄悄做:坐标落到底图外面 = 底图/坐标范围对不上,
             # 得让用户在日志里看见,不然只会觉得"点怎么画到边上了"
             app.log(f"[铃铛]{name} ({x},{y}) 落到底图外面了(底图 {src[0]}x"
                     f"{src[1]}),点已夹到边上 —— 重新采一次这张底图")
-        # 就一个红圆点(用户要求):外圈浅色描边,压在任何底图上都看得见
-        c.create_oval(dx - 8, dy - 8, dx + 8, dy + 8, fill="#ff2d2d",
-                      outline="#ffffff", width=2)
-        app.bell_hint.configure(text="")
+        dx = min(max(px_, 0), dw)
+        dy = min(max(py_, 0), dh)
+        # 就一个红圆点(用户要求):外圈白描边,压在任何底图上都看得见
+        c.create_oval(dx - 8, dy - 8, dx + 8, dy + 8, fill=sk["dot"],
+                      outline=sk["dot_ring"], width=2)
     except Exception as err:
-        c.create_text(BELL_W // 2, BELL_H // 2, text=f"{name}\n{x}, {y}",
-                      fill=sk["yellow"], justify="center",
-                      font=(sk["font_big"], 22))
-        app.bell_hint.configure(text=f"底图读取失败:{err}")
+        c.delete("all")
+        _set_map_h(app, MAP_H)
+        c.create_text(MAP_W // 2, MAP_H // 2, text=f"底图读取失败:{err}",
+                      fill=sk["red"], font=(sk["font"], 12))
+
+
+def _set_map_h(app, h):
+    """画布高度 = 这张底图按 400 宽缩放后的高度(别用固定高,上下会留死带)。"""
+    c = app.bell_canvas
+    h = max(120, int(h))
+    try:
+        if int(c.cget("height")) == h:
+            return
+        c.configure(height=h)
+    except Exception:
+        return
+    _keep_on_screen(app)
+
+
+def _keep_on_screen(app):
+    """窗高变了以后把窗口夹回屏幕内(高的地图会长到屏幕外,底行就点不到)。"""
+    win = getattr(app, "bell_win", None)
+    try:
+        win.update_idletasks()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w, h = win.winfo_width(), win.winfo_height()
+        x, y = win.winfo_x(), win.winfo_y()
+        nx = max(0, min(x, max(0, sw - w)))
+        ny = max(0, min(y, max(0, sh - h)))
+        if (nx, ny) != (x, y):
+            ui_widgets.place(win, (nx, ny))
+    except Exception:
+        pass

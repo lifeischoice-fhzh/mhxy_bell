@@ -99,7 +99,7 @@ os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
 CONFIG_SECTIONS = {
     "app": ("use_gpu", "active_tool"),
-    "bell": ("bell_client", "bell_interval"),
+    "bell": ("bell_client", "bell_interval", "ui_mode"),
 }
 _KEY_SECTION = {k: s for s, ks in CONFIG_SECTIONS.items() for k in ks}
 

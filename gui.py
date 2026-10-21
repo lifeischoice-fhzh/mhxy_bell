@@ -172,7 +172,7 @@ class App:
             n_wins = 0
             self.log(f"[铃铛]自动定位失败: {err}")
         if n_wins:
-            # 定位结果当场存下来(单台也存):按钮上显示角色名;
+            # 定位结果当场存下来(单台也存):底行显示角色名;
             # 多开时顺便让用户按角色名选一台(选过就不再弹)。
             self._ask_bell_client()
             rect = self._bell_client_rect()
@@ -202,7 +202,7 @@ class App:
         bt = self.engine.bell_tool.ui_state()["target"]
         if bt:
             self.bell_var.set(bt)
-            ui_bell.set_coord(self, bt)       # 坐标那行是 PIL 画的图(带黑边),得重画
+            ui_bell.set_coord(self, bt)       # 地名/坐标是两个控件,得跟着写
         # 大小由内容定(皮肤换了以后高度会变,写死一个数会摆偏):set_place 拿
         # 窗口的请求尺寸来居中。
         self._show_here(self.bell_win)
@@ -210,31 +210,40 @@ class App:
         ui_bell.draw_bell(self)
 
     def _bell_client_label(self):
-        """「自动定位」按钮上的字:选定的客户端角色名;没定位到还是「自动定位」。"""
+        """底行那句角色名:选定的客户端;没定位到就空着(界面不写"定位"字样)。"""
         name = tools_bell.client_name(str(self._get("bell_client") or ""))
-        return name or "自动定位"
+        return name or ""
 
     def _refresh_bell_locate(self, rect=None):
-        """把定位结果写到小窗:定位到哪台客户端,「自动定位」按钮上就写角色名。
+        """把定位结果写到小窗底行:定位到哪台客户端就写角色名,没定位到清空。
 
-        rect=None = 这次没定位到:按钮退回「自动定位」。客户端矩形不再显示
-        (用户定的 2026-10-20)。
+        客户端矩形不再显示(用户定的 2026-10-20)。
         """
-        btn = getattr(self, "bell_locate_btn", None)
+        lbl = getattr(self, "bell_client_lbl", None)
         try:
-            if btn is not None and btn.winfo_exists():
-                btn.configure(text=(self._bell_client_label() if rect
-                                    else "自动定位"))
+            if lbl is not None and lbl.winfo_exists():
+                lbl.configure(text=(self._bell_client_label() if rect else ""))
         except Exception:
             pass
 
+    def on_toggle_theme(self):
+        """底行那颗 ☀/☾:深色(A) / 明亮(B)两套皮肤来回切。
+
+        选择记进 `ui_mode`,下次进来还是这套(配置在 bell 分区)。
+        """
+        mode = "a" if str(self._get("ui_mode", "a") or "a") == "b" else "b"
+        self._set("ui_mode", mode)
+        core.save_config(self.cfg)
+        ui_bell.apply_theme(self, mode)
+        self.log(f"[铃铛]界面换成{'明亮' if mode == 'b' else '深色'}模式")
+
     def on_locate_clients(self):
-        """「自动定位」:重新找客户端;多开时弹列表让用户按角色名选一台。"""
+        """重新找客户端(底行那个 ↻);多开时弹列表让用户按角色名选一台。"""
         import tkinter.messagebox as mb
         found, _mini = core.find_client_windows()
         if not found:
             self._refresh_bell_locate(None)
-            mb.showinfo("自动定位", "没找到客户端窗口,请确认游戏已启动且未最小化",
+            mb.showinfo("降妖伏魔", "没找到客户端窗口,请确认游戏已启动且未最小化",
                         parent=self.bell_win)
             return
         if not self._ask_bell_client(force=len(found) > 1):
@@ -308,7 +317,7 @@ class App:
             "分辨率不支持",
             "降妖伏魔只支持 640x480 和 800x600 两种客户端分辨率。\n\n"
             f"当前客户端窗口是 {size}。请在游戏设置里把分辨率改成 "
-            "640x480 或 800x600，再点「自动定位」。",
+            "640x480 或 800x600，再点小窗右下角的 ↻。",
             parent=parent)
 
     # ---- 地图采集(窗口在 ui/bell,流程方法在这一层:入口层才同时够得着 tools 和 ui)。
@@ -513,8 +522,8 @@ class App:
                 bv = getattr(self, "bell_var", None)
                 if bv is not None and bv.get() != bt:
                     bv.set(bt)
-                    # 坐标那行是 **PIL 画的图**(带黑边),`bell_var` 改了它不会自己变 ——
-                    # 必须跟着重画(原项目 2026-10-17 用户报"一直显示等待铃铛任务提示")。
+                    # 地名/坐标是两个控件,`bell_var` 改了它们不会自己变 ——
+                    # 必须跟着写(原项目 2026-10-17 用户报"一直停在等待")。
                     ui_bell.set_coord(self, bt)
                     ui_bell.draw_bell(self)
         except Exception:

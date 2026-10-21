@@ -603,6 +603,9 @@ def sec_bell():
                 + rng.integers(-8, 8, (h, w, 3)), 0, 255).astype(np.uint8)
             self.dialog = False
             self.page = 1
+            self.flap = False                # 面板闪一下时"字"多两行(签名跟着变)
+            self.trkpanel = False            # 任务栏那块画成"深底+一行字"(签名用例)
+            self.trkflip = False             # 任务栏那行"字"挪个位置(签名跟着变)
             self.dlg_override = []           # 误读注入:非空时按顺序返回它
 
         def image(self):
@@ -611,9 +614,14 @@ def sec_bell():
                 x0, y0, x1, y1 = tools_bell.rel_rect(
                     self.rect, tools_bell.DIALOG_BAND)
                 img[y0:y1, x0:x1] = 32          # 半透明黑面板那种"暗且不彩"
-                for i in range(2 * self.page):   # 面板里画几行"字"
-                    yy = y0 + 30 + i * 45
+                for i in range(2 * self.page + (2 if self.flap else 0)):
+                    yy = y0 + 30 + i * 45       # 面板里画几行"字"
                     img[yy:yy + 16, x0 + 60:x1 - 60] = 230
+            if self.trkpanel:                    # 任务栏那块:深底 + 一行亮字
+                tx0, ty0, tx1, ty1 = 620, 193, 880, 390
+                img[ty0:ty1, tx0:tx1] = 32
+                yy = ty0 + 40 + (32 if self.trkflip else 0)
+                img[yy:yy + 16, tx0 + 40:tx1 - 40] = 230
             return img
 
         def grab(self, region=None):
@@ -779,14 +787,16 @@ def sec_bell():
     MISREAD = blk("我发现它的踪迹在西梁女国(24,108),少侠们过去看看吧。", 100, 430)
 
     def _flap_and_read(blocks):
-        """面板闪一下(真机就是这么触发重读的),后面这一次会读到 blocks 里的字。"""
+        """面板闪一下、回来时"字"变一变(真机上重读是"换页"触发的,像素跟着换),
+        后面这一次会读到 blocks 里的字。"""
+        win.flap = not win.flap
         win.dlg_override = list(blocks)
         win.dialog = False
         tool_f._ts = 0.0
         tool_f.tick(force=False)              # 面板消失
         win.dialog = True
         tool_f._ts = 0.0
-        tool_f.tick(force=False)              # 面板又出现 -> 这次读出 blocks[0]
+        tool_f.tick(force=False)              # 面板又出现(字变了)-> 这次读出 blocks[0]
 
     _flap_and_read([MISREAD])                 # 只读花这一次:重扫就该读回原值
     check("对话框读花:不一样的值不覆盖,先不报并立刻重扫一次",
@@ -802,6 +812,49 @@ def sec_bell():
     check("过程日志:认到时也把读到的原文写上(不然「怎么读成这个」只能靠猜)",
           any("识别 对话框条带" in m and "读到:" in m for m in app_f.logs[n0:]),
           " | ".join(m for m in app_f.logs[n0:] if "识别" in m)[:180])
+
+    # 面板闪一下又回来、**字没变**:不许重读。真机日志里暗比在阈值边上一抖
+    # (0.52~0.67 反复横跳),面板一秒出现/消失两三次,原来每次"出现"都强制重读
+    # 一遍 —— 490 秒里 267 次 OCR 全是这样的白读。读不读看**签名变没变**。
+    calls.clear()
+    win.dialog = False
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)                  # 面板消失(字没变)
+    win.dialog = True
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)                  # 面板回来、字没变 -> 不许重读
+    check("快路:面板闪一下回来、字没变 -> 不重读(省下的是整次 OCR)",
+          not calls, f"扫了{calls}")
+
+    # 非铃铛面板(聊天/买东西)的内容一直在滚:变了也别每拍都读 —— 真机上这种
+    # 占 OCR 的大头(490 秒里 267 次全是它)。铃铛面板不受影响(换页当轮重读,
+    # 上面「面板里换了字就当轮换目标」那条盯着)。
+    CHAT = [blk("玩家甲:去长寿村(50,60)集合,别乱跑。", 100, 430),
+            blk("玩家乙:在建邺城(15,122)摆摊卖药。", 100, 430),
+            blk("玩家丙:来朱紫国(88,94)看宝图呀。", 100, 430)]
+    win.dlg_override = list(CHAT)
+    tool_f._slot[1].trk_ts = time.time() + 10      # 任务栏那一支别掺和
+    _ocr0, _gate0 = tool_f._stat["ocr"], tool_f._stat["dlg_gate"]
+    _n4 = len(app_f.logs)
+    win.flap = not win.flap                   # 面板里的"字"滚了一下
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)                  # 第一拍:读一次(还没认过它是非铃铛)
+    win.flap = not win.flap                   # 又滚了一下
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)                  # 0.6 秒内:哪怕"变了"也不读
+    check("非铃铛面板:内容一直滚也不再每拍重读(0.6 秒内顶多一次)",
+          tool_f._stat["ocr"] == _ocr0 + 1
+          and not any("妖魔位置" in m for m in app_f.logs[_n4:]),
+          f"OCR {_ocr0} -> {tool_f._stat['ocr']}")
+    tool_f._slot[1].dlg_ts -= 1.0             # 把"上次读"拨回一秒前:该再读了
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)                  # 字还停在上次读之后的那个样子
+    check("非铃铛面板:滚动的字还是按 0.6 秒的节奏重读(别漏了真任务换页)",
+          tool_f._stat["ocr"] == _ocr0 + 2
+          and tool_f._stat["dlg_gate"] == _gate0 + 2
+          and not any("妖魔位置" in m for m in app_f.logs[_n4:]),
+          f"OCR={tool_f._stat['ocr']} gate={tool_f._stat['dlg_gate']}")
+    win.flap = False                          # 还原:后面的用例按原画面断言
 
     # 对话框第二遍那一拍(`again`)**任务栏整支跳过**(2026-10-16 检视定的):那一拍带着
     # force/again,任务栏的"见过两次"复核会被放路,而此刻任务栏第一行**恰恰就是对话框
@@ -912,6 +965,78 @@ def sec_bell():
           and all("位置照旧留着" in m and "不作废" in m and "重锚" not in m
                   for m in _diag),
           " | ".join(_diag))
+
+    # **item 档的内容签名门控**(2026-10-21):等的是"任务栏换了字",不是定时读 ——
+    # 内容没变不读(慢兜底 TRK_SIG_GAP),变了当拍就读;读到没确认的候选才收紧回
+    # TRK_ITEM_GAP(两遍一致要连读)。
+    winS = Win()
+    callsS = []
+
+    def ocrS(img, **kw):
+        callsS.append(img.shape[:2])
+        if winS.trkflip:
+            return [HDR, TITLE, blk("◆蛊虫发现妖魔在宝象国(150,54),"
+                                    "快去降服他吧。", 700, 225)]
+        return [HDR, TITLE, blk("◆蛊虫发现妖魔在宝象国(99,54),"
+                                "快去降服他吧。", 700, 225)]
+
+    appS = types.SimpleNamespace(
+        cfg=core.split_config({"active_tool": "bell"}),
+        logs=[], log=lambda m, **k: appS.logs.append(m))
+    toolS = tools_bell.BellTool(
+        appS, lambda: winS,
+        lambda: types.SimpleNamespace(recognize_blocks=ocrS))
+    toolS._slot[1] = seed_state(winS.rect, trk=_BOX, mode="item")
+    toolS._cycle[1] = ("宝象国", 99, 54)      # 对话框已经给过这条(任务栏开头写的就是它)
+    winS.trkpanel = True                      # 任务栏是"深底 + 一行亮字"(真机那样)
+
+    def _tickS(zero=False):
+        toolS._ts = 0.0
+        if zero:
+            toolS._slot[1].trk_ts = 0.0
+        toolS.tick(force=False)
+
+    _tickS(True)                              # 第一拍:还没有签名,读一次
+    _tickS(True)                              # 第二拍:同一个值连读两次 -> 认稳
+    _nS = len(callsS)
+    _gst = toolS._slot[1]
+    check("任务栏签名:认稳之后兜底放慢(不用每 0.5s 读一次)",
+          _gst.trk_gap == tools_bell.TRK_SIG_GAP,
+          f"gap={_gst.trk_gap} 读{_nS}次")
+    _gst.trk_ts -= 1.0                        # 老节奏(0.5s)到点了,慢兜底还没到
+    _tickS()
+    check("任务栏签名:内容没变,老节奏到点也不读(签名说了算)",
+          len(callsS) == _nS, f"多读 {len(callsS) - _nS} 次")
+    winS.trkflip = True                       # 任务栏换了字
+    _tickS()                                  # 不用等兜底:当拍就读
+    check("任务栏签名:任务栏换了字当拍就读(第二个坐标不等兜底)",
+          len(callsS) == _nS + 1
+          and toolS._slot[1].trk_gap == tools_bell.TRK_ITEM_GAP,
+          f"读 {len(callsS) - _nS} 次 gap={toolS._slot[1].trk_gap}")
+
+    # 反例:hover 档**不**走这套(悬停行在表框上方、裁剪跟着鼠标走,签名不可比)——
+    # 刚读过就还得按 HOVER_GAP 等,签名不能把节奏门控短路掉(每拍都读就退化成 0.15s)
+    winH = Win()
+    callsH = []
+
+    def ocrH(img, **kw):
+        callsH.append(1)
+        return [HDR, blk("在宝象国(118,54)处", 60, 30)]
+
+    appH = types.SimpleNamespace(
+        cfg=core.split_config({"active_tool": "bell"}),
+        logs=[], log=lambda m, **k: appH.logs.append(m))
+    toolH = tools_bell.BellTool(
+        appH, lambda: winH,
+        lambda: types.SimpleNamespace(recognize_blocks=ocrH))
+    toolH._slot[1] = seed_state(winH.rect, trk=_BOX, mode="hover")
+    tools_bell.cursor_pos = lambda: (700, 300)     # 压在任务栏那块上(悬停档才读)
+    toolH._ts = 0.0
+    toolH._slot[1].trk_ts = time.time()            # 刚读过:这一拍不该再读
+    toolH.tick(force=False)
+    check("任务栏签名(反例):hover 档不让签名短路节奏,刚读过就不读",
+          not callsH, f"读了 {len(callsH)} 次")
+    tools_bell.cursor_pos = lambda: (0, 0)
 
     # 开新周期时任务栏那边的残留要清干净(用户定的 2026-10-16)。但**屏幕上那条旧
     # 行清不掉**(游戏刷新有延迟):`trk_stale` 记下它 —— 这一整个周期都不许拿它当
@@ -1176,11 +1301,13 @@ def sec_bell():
               "领取任务:降妖伏魔·招魂幡。",
               "去西梁女国找梦魇魔。剩余时间2小时。",
               "去西梁女国找迷幻妖。剩余时间2小时。")))
-    check("任务栏节奏:逐妖蛊虫 0.5s / 悬停 0.25s / 认类型 0.6s / 没显示 1.0s",
+    check("任务栏节奏:悬停 0.25s / 逐妖蛊虫候选紧跟 0.5s / 认类型 0.6s / "
+          "内容没变化时按 2.0s 慢兜底",
           tools_bell.TRK_ITEM_GAP == 0.5
           and tools_bell.HOVER_GAP == 0.25
           and tools_bell.HOVER_GAP < tools_bell.TRK_ITEM_GAP
-          < tools_bell.TRK_GAP < tools_bell.TRK_GAP_IDLE)
+          < tools_bell.TRK_GAP < tools_bell.TRK_SIG_GAP
+          and 0 < tools_bell.TRK_SIG_MIN < tools_bell.SIG_MIN)
 
     # ---- 类型**只由对话框**决定(用户定的 2026-10-16) ----
     # 任务栏那份文字永远不参与定类型(连"对话框认不出时拿它当备胎"都不许):类型由
@@ -2507,24 +2634,85 @@ def sec_bell_ui():
                   not any("◆ 降妖伏魔 ◆" in _txt(w)
                           for w in _walk(app.bell_win)),
                   str(_texts(app.bell_win)))
-            check("小窗:底下只剩一颗「自动定位」(宽度随文字走,不会挤到显示不全)",
-                  _txt(app.bell_locate_btn) == "自动定位"
-                  and int(app.bell_locate_btn.cget("width") or 0) == 0
+            check("小窗:底行两颗无文字圆钮(☀/☾ 切主题 + ↻ 换客户端)",
+                  _txt(app.bell_locate_btn) == ""
+                  and _txt(app.bell_theme_btn) == ""
                   and not hasattr(app, "bell_frame_btn")
                   and not hasattr(app, "bell_region_clear_btn"),
-                  f"{_txt(app.bell_locate_btn)} / "
-                  f"width={app.bell_locate_btn.cget('width')}")
-            # 卡片高度以前是写死的 430px,内容要 479px —— 底下的按钮直接被裁掉。
-            # 现在由内容撑,这里量一遍:按钮的下边缘得在卡片里面。
-            _card = app.bell_locate_btn.master
+                  f"{_txt(app.bell_locate_btn)!r}/"
+                  f"{_txt(app.bell_theme_btn)!r}")
+            # ---- 深色 / 明亮两套皮肤:底行那颗 ☀/☾ 切,选择存进 ui_mode ----
+            _dark, _light = ui_widgets.BELL_SKINS["a"], ui_widgets.BELL_SKINS["b"]
+            check("主题:默认是深色(A)",
+                  app.bell_mode == "a"
+                  and str(app.bell_win.cget("bg")) == _dark["bg"],
+                  f"{app.bell_mode} {app.bell_win.cget('bg')}")
+            app.on_toggle_theme()
+            check("主题:切到明亮 -> 窗口/画布/文字全换色(不重建窗口)",
+                  app.bell_mode == "b"
+                  and str(app.bell_win.cget("bg")) == _light["bg"]
+                  and str(app.bell_canvas.cget("bg")) == _light["paper"]
+                  and str(app.bell_name.cget("fg")) == _light["txt"]
+                  and str(app.bell_coord.cget("fg")) == _light["gold"]
+                  and app.cfg["bell"].get("ui_mode") == "b",
+                  f"{app.bell_mode} {app.bell_win.cget('bg')} "
+                  f"{app.bell_canvas.cget('bg')} {app.cfg['bell'].get('ui_mode')}")
+            app.on_toggle_theme()
+            check("主题:再点一次切回深色(配置也跟着回写)",
+                  app.bell_mode == "a"
+                  and str(app.bell_win.cget("bg")) == _dark["bg"]
+                  and app.cfg["bell"].get("ui_mode") == "a",
+                  f"{app.bell_mode} {app.bell_win.cget('bg')} "
+                  f"{app.cfg['bell'].get('ui_mode')}")
+            # 底行高度写死 28px,量一遍:按钮的下边缘得在底行里面(没被裁掉)
+            _foot = app.bell_locate_btn.master
             _rows = (app.bell_locate_btn,)
-            _bottoms = {str(w): w.winfo_rooty() - _card.winfo_rooty()
+            _bottoms = {str(w): w.winfo_rooty() - _foot.winfo_rooty()
                         + w.winfo_height() for w in _rows}
-            check("小窗:卡片装得下底下的按钮(不会被裁掉)",
-                  all(b <= _card.winfo_height() for b in _bottoms.values())
-                  and _card.winfo_height() > 0,
-                  f"卡片高={_card.winfo_height()} 按钮下边缘={_bottoms}")
-            # ---- 首次进入自动定位:定位结果当场落盘 + 按钮显示角色名 ----
+            check("小窗:底行装得下 ↻ 按钮(不会被裁掉)",
+                  all(b <= _foot.winfo_height() for b in _bottoms.values())
+                  and _foot.winfo_height() > 0,
+                  f"底行高={_foot.winfo_height()} 按钮下边缘={_bottoms}")
+            # ↻ 跟着角色名走(用户 2026-10-21 要求):名字多长,按钮就跟到哪,
+            # 不是钉在某个 x 上;右边的 ☀/☾ 不受影响
+            _lbl, _loc = app.bell_client_lbl, app.bell_locate_btn
+            _lbl.configure(text="祭花′")
+            app.root.update_idletasks()
+            _x_short, _w_short = _loc.winfo_x(), _lbl.winfo_width()
+            _lbl.configure(text="梦幻西游 ONLINE")
+            app.root.update_idletasks()
+            _x_long, _w_long = _loc.winfo_x(), _lbl.winfo_width()
+            check("底行:↻ 紧跟角色名(名字越长越往右),不跟 ☀/☾ 抢位置",
+                  _x_long > _x_short
+                  and abs(_x_short - _w_short) <= 12
+                  and abs(_x_long - _w_long) <= 12
+                  and _loc.winfo_x() + _loc.winfo_width()
+                  < app.bell_theme_btn.winfo_x(),
+                  f"x {_x_short}->{_x_long} 名字宽 {_w_short}->{_w_long} "
+                  f"主题钮 x={app.bell_theme_btn.winfo_x()}")
+            _lbl.configure(text="")
+            # 字号是磅值(20pt 在 100% 下重排成 ~41px 高):头部行高必须由内容撑,
+            # 写死高度会把地名/坐标上下裁掉(用户 2026-10-21 报"地图名显示不全")
+            check("小窗:地名/坐标不被裁(控件高 = 请求高,行高由内容撑)",
+                  app.bell_name.winfo_height() == app.bell_name.winfo_reqheight()
+                  and app.bell_coord.winfo_height()
+                  == app.bell_coord.winfo_reqheight(),
+                  f"地名 {app.bell_name.winfo_height()}/"
+                  f"{app.bell_name.winfo_reqheight()} 坐标 "
+                  f"{app.bell_coord.winfo_height()}/"
+                  f"{app.bell_coord.winfo_reqheight()}")
+            # 地名太长就缩字号(不截断):整串 + 坐标的请求宽要落在画布宽度里
+            ui_bell.set_coord(app, "很长的地图名字测试 (1234,5678)")
+            _fpt = int(str(app.bell_name.cget("font")).split()[-1])
+            check("小窗:地名太长 -> 缩字号整串显示(不省略、不截断)",
+                  _fpt < ui_bell.NAME_PT
+                  and app.bell_name.winfo_reqwidth()
+                  + app.bell_coord.winfo_reqwidth() <= ui_bell.MAP_W,
+                  f"字号={_fpt} 宽="
+                  f"{app.bell_name.winfo_reqwidth()}+"
+                  f"{app.bell_coord.winfo_reqwidth()}")
+            ui_bell.set_coord(app, "")
+            # ---- 首次进入自动定位:定位结果当场落盘 + 底行显示角色名 ----
             one = [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
                     [800, 100, 1615, 780])]
             with patch(find_client_windows=lambda: (list(one), [])):
@@ -2537,21 +2725,19 @@ def sec_bell_ui():
                       app.cfg["bell"]["bell_client"] == one[0][0]
                       and saved_bell.get("bell_client") == one[0][0],
                       str(saved_bell.get("bell_client")))
-                check("进功能:按钮变成角色名(客户端矩形不再显示)",
-                      _txt(app.bell_locate_btn) == "祭花′"
+                check("进功能:底行显示角色名(客户端矩形不再显示)",
+                      _txt(app.bell_client_lbl) == "祭花′"
+                      and _txt(app.bell_locate_btn) == ""
                       and not hasattr(app, "bell_coord_var"),
-                      _txt(app.bell_locate_btn))
+                      _txt(app.bell_client_lbl))
             with patch(find_client_windows=lambda: ([], [])):
                 app.engine.bell_tool.locate = lambda: 0
                 gui.App._enter_bell_slow(app)
-                check("进功能:没定位到 -> 按钮还是「自动定位」",
-                      _txt(app.bell_locate_btn) == "自动定位",
-                      _txt(app.bell_locate_btn))
+                check("进功能:没定位到 -> 底行空着(不写「自动定位」这种字)",
+                      _txt(app.bell_client_lbl) == "",
+                      _txt(app.bell_client_lbl))
             app.engine.bell_tool.locate = lambda: 0       # 还原(后面的用例靠它)
             shown_texts = _texts(app.bell_win)
-            # 监听常开(2026-10-20 起):没有"关着"这回事,没妖魔时画布上只写等待
-            def _hint_txt():
-                return str(app.bell_hint.cget("text"))
 
             def _canvas_txt():
                 c = app.bell_canvas
@@ -2560,9 +2746,11 @@ def sec_bell_ui():
 
             app._bell_spot = object()          # 逼它重画(不然缓存命中直接返回)
             ui_bell.draw_bell(app)
-            check("小窗:监听常开 —— 没妖魔时只画「等待」,不再提示开关",
-                  "等待铃铛任务提示" in _canvas_txt() and _hint_txt() == "",
-                  f"{_canvas_txt()} / {_hint_txt()!r}")
+            check("小窗:没妖魔时画布上只写「暂无目标」(不出现监听/定位字样)",
+                  _canvas_txt() == "暂无目标"
+                  and not any(k in t for t in _texts(app.bell_win)
+                              for k in ("监听", "定位")),
+                  f"{_canvas_txt()} / {_texts(app.bell_win)}")
 
             check("小窗:不再显示那两句提示语(右键说明 / 红点说明)",
                   not any("右键" in t for t in shown_texts)
@@ -2616,10 +2804,10 @@ def sec_bell_ui():
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE", [800, 100, 1615, 780])], [])):
                 app.on_locate_clients()
-                check("定位:单客户端 -> 只把角色名写在按钮上(矩形不再显示)",
-                      _txt(app.bell_locate_btn) == "梦幻西游 ONLINE"
+                check("定位:单客户端 -> 只把角色名写在底行(矩形不再显示)",
+                      _txt(app.bell_client_lbl) == "梦幻西游 ONLINE"
                       and not hasattr(app, "bell_coord_var"),
-                      _txt(app.bell_locate_btn))
+                      _txt(app.bell_client_lbl))
                 check("定位:单客户端也当场存下选择",
                       app.cfg["bell"]["bell_client"] == "梦幻西游 ONLINE",
                       app.cfg['bell'].get('bell_client'))
@@ -2628,11 +2816,11 @@ def sec_bell_ui():
                       [800, 100, 1615, 780])], [])):
                 app._set("bell_client", "")
                 app.on_locate_clients()
-                check("定位:真实标题只把角色名写在按钮上",
-                      _txt(app.bell_locate_btn) == "祭花′"
+                check("定位:真实标题只把角色名写在底行",
+                      _txt(app.bell_client_lbl) == "祭花′"
                       and app.cfg["bell"]["bell_client"].endswith(
                           "祭花′[29024311])"),
-                      f"{_txt(app.bell_locate_btn)} / "
+                      f"{_txt(app.bell_client_lbl)} / "
                       f"{app.cfg['bell'].get('bell_client')}")
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
@@ -2706,10 +2894,10 @@ def sec_bell_ui():
                      for i in app.bell_canvas.find_all()]
             ovals = [i for i in app.bell_canvas.find_all()
                      if app.bell_canvas.type(i) == "oval"]
-            check("地图:只画一个红圆点,不标坐标字(也没有十字线)",
+            check("地图:只画一个红圆点,不标坐标字(格子烘在底图里,不是画布元素)",
                   "text" not in items and "line" not in items
                   and len(ovals) == 1
-                  and app.bell_canvas.itemcget(ovals[0], "fill") == "#ff2d2d",
+                  and app.bell_canvas.itemcget(ovals[0], "fill") == "#ff3b30",
                   str(items))
             app.engine.bell_tool.ui_state = lambda: {
                 "spot": ("宝象国", None, None), "target": ""}
@@ -2718,8 +2906,7 @@ def sec_bell_ui():
             kinds = [app.bell_canvas.type(i)
                      for i in app.bell_canvas.find_all()]
             check("地图:只有地图没坐标时不画点、也不写字",
-                  kinds == ["image"] and str(app.bell_hint.cget("text")) == "",
-                  f"{kinds} / {app.bell_hint.cget('text')!r}")
+                  kinds == ["image"], str(kinds))
 
             app.root.destroy()                # Tk 用完就拆(没有真引擎要收)
 
