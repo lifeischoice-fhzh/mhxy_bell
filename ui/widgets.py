@@ -143,6 +143,75 @@ def hide_maximize(win):
         pass
 
 
+_ICON_CACHE = {}
+
+
+def set_window_icon(win, path):
+    """给窗口挂**精确尺寸**的真 HICON(标题栏 / 任务栏),绕开 Tk 那次缩放。
+
+    **别再给这扇窗调 `wm iconbitmap`**:它走 `LoadImage(LR_DEFAULTSIZE)` 取 32px
+    那一档,而且 Tk 会在窗口映射后再盖一次,把这里挂的图标顶掉 —— 任务栏只好
+    把 32px 缩到 30px,边缘就糊了(2026-10-22 用户拿旁边 Chrome/微信对比:
+    "你看糊不糊")。这里自己 LoadImage:标题栏 16、任务栏 24(逻辑像素,按真实
+    缩放换算),再 WM_SETICON 挂上去。句柄按 (路径, 尺寸) 缓存 —— `_dress`
+    每次 <Map> 都调,不缓存会一遍遍泄漏。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetParent.argtypes = [wintypes.HWND]
+        u.GetParent.restype = wintypes.HWND
+        u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                 wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                 wintypes.UINT]
+        u.LoadImageW.restype = wintypes.HANDLE
+        u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                   wintypes.WPARAM, wintypes.LPARAM]
+        u.SendMessageW.restype = wintypes.LPARAM
+        hwnd = u.GetParent(win.winfo_id()) or win.winfo_id()
+        # **本进程是 DPI 不感知的**(Tk 看到 1536x864、实际 1920x1080):
+        # GetDpiForWindow / GetDpiForSystem 对这种窗口一律返回 96(把线程临时
+        # 切到 PMv2 也没用,窗口的 awareness 建的时候就定了)—— 于是只拿到
+        # 24px 的图,任务栏再放大到 30px,糊就是这么来的。真实缩放比问 shcore
+        # (`GetScaleFactorForMonitor` 报的是系统那档 100/125/150,和进程的
+        # awareness 无关)。
+        dpi = 96
+        try:
+            import ctypes as _ct
+            shcore = _ct.WinDLL("shcore")
+            u.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            u.MonitorFromWindow.restype = wintypes.HMONITOR
+            shcore.GetScaleFactorForMonitor.argtypes = [
+                wintypes.HMONITOR, _ct.POINTER(_ct.c_int)]
+            hmon = u.MonitorFromWindow(hwnd, 2)   # MONITOR_DEFAULTTONEAREST
+            scale = _ct.c_int(100)
+            if shcore.GetScaleFactorForMonitor(hmon, _ct.byref(scale)) == 0:
+                dpi = int(round(96 * (scale.value or 100) / 100.0))
+        except Exception:
+            dpi = 96
+        px = lambda n: max(4, int(round(n * dpi / 96.0)))   # noqa: E731
+
+        def _hicon(size):
+            key = (str(path), size)
+            h = _ICON_CACHE.get(key)
+            if h:
+                return h
+            # LR_LOADFROMFILE(0x10) | LR_DEFAULTCOLOR:按请求的像素尺寸取那一档
+            h = u.LoadImageW(None, str(path), 1, size, size, 0x10)
+            if h:
+                _ICON_CACHE[key] = h
+            return h
+
+        # ICON_SMALL=0(标题栏) / ICON_BIG=1(Alt-Tab、任务栏) / ICON_SMALL2=2
+        for idx, size in ((0, px(16)), (1, px(24)), (2, px(24))):
+            h = _hicon(size)
+            if h:
+                u.SendMessageW(hwnd, 0x0080, idx, h)   # WM_SETICON
+    except Exception:
+        pass
+
+
 def stop_anim(win):
     """把还没跑完的动效停掉。
 
@@ -279,7 +348,6 @@ BELL_SKINS = {
         "gold_txt": "#1a1206",
         "green": "#5fd18a",       # 亮绿:强调(抽屉小标题)
         "red": "#ff6a52",         # 珊瑚红:异常提示
-        "yellow": "#f0c05a",      # 同金:数值(pick_client 选中行)
         "dot": "#ff3b30",         # 红点
         "dot_ring": "#ffffff",
         "txt": "#e9ecf2",         # 主文字
@@ -302,7 +370,6 @@ BELL_SKINS = {
         "gold_txt": "#ffffff",
         "green": "#16a34a",
         "red": "#dc2626",
-        "yellow": "#111827",
         "dot": "#ef4444",
         "dot_ring": "#ffffff",
         "txt": "#141922",
@@ -395,35 +462,65 @@ def bell_image(w, h):
     return out
 
 
-def _icon_pil(fill, outline, fg, glyph, size=28):
-    """圆形图标按钮:灰底圆 + 一个字形(↻ 换客户端 / ☀ 切明亮 / ☾ 切深色)。"""
-    from PIL import ImageDraw, ImageFont
-    img = _round_pil(size, size, size // 2, fill, outline, 1, None)
+def chip_image(w, h, pressed=False, radius=None):
+    """底行「角色名 ▾」那个圆角框的底图(按尺寸缓存,按下时暗一档)。
+
+    radius 不给就当胶囊(h/2);展开成列表时传 14(上下圆角别跟着变大)。
+    """
+    from PIL import ImageTk
+    imgs = _bell_imgs()
+    rr = max(2, int(radius if radius is not None else int(h) // 2))
+    key = (current_mode(), "chip", int(w), int(h), rr, bool(pressed))
+    got = imgs.get(key)
+    if got is None:
+        c = bell_palette()
+        fill = _shade(c["btn"], -18 if pressed else 0)
+        got = ImageTk.PhotoImage(
+            _round_pil(int(w), int(h), rr, fill, c["btn_line"], 1, None))
+        imgs[key] = got
+    return got
+
+
+def _icon_pil(fg, glyph, size=30, face=None, line=None):
+    """主题钮的字形:**圆形底**(2026-10-22 用户定的:黑白切换钮用圆形)+ 字。
+
+    face/line 是圆底的填充/描边(拿皮肤里的 btn / btn_line);按下换金色字
+    (见 `_icon_images`),圆底不变、悬停也不变 —— 点击感只靠字色给。
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    s = 4
+    img = Image.new("RGBA", (size * s, size * s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+    if face:
+        d.ellipse((s // 2, s // 2, size * s - s // 2, size * s - s // 2),
+                  fill=face, outline=line, width=s)
     font = None
     for path in ("C:/Windows/Fonts/seguisym.ttf",
                  "C:/Windows/Fonts/msyh.ttc"):
         try:
-            font = ImageFont.truetype(path, 14)
+            font = ImageFont.truetype(path, 13 * s)
             break
         except Exception:
             continue
     if font is not None:
-        d.text((size // 2, size // 2 - 1), glyph, font=font, fill=fg,
+        d.text((size * s // 2, size * s // 2), glyph, font=font, fill=fg,
                anchor="mm")
     else:                                    # 一个字体都没有:画个圈
-        d.arc([8, 8, size - 8, size - 8], 40, 300, fill=fg, width=2)
-    return img
+        d.arc([8 * s, 8 * s, (size - 8) * s, (size - 8) * s], 40, 300,
+              fill=fg, width=2 * s)
+    return img.resize((size, size), Image.LANCZOS)
 
 
 def _icon_images(glyph, palette):
-    """图标按钮的**三态**图(常态 / 悬停 / 按下)。"""
+    """主题钮的**三态**图:常态灰字 / 悬停不变 / **按下金字**(点击感)。
+
+    圆底三态都一样(用户 2026-10-22:悬停不换背景)。
+    """
     from PIL import ImageTk
     c = palette
-    return [ImageTk.PhotoImage(
-        _icon_pil(_shade(c["btn"], k), c["btn_line"],
-                  c["txt"] if k >= 0 else c["sub"], glyph))
-        for k in (0, 16, -20)]
+    return [ImageTk.PhotoImage(_icon_pil(fg, glyph, face=c["btn"],
+                                         line=c["btn_line"]))
+            for fg in (c["sub"], c["sub"], c["gold"])]
 
 
 _BTN_SPECS = (                # (样式名, 元素标签, 底色, 描边, 字色, 高光, 内边距, 图元 border)
@@ -435,7 +532,6 @@ _BTN_SPECS = (                # (样式名, 元素标签, 底色, 描边, 字色
      (16, 0), 14),
 )
 _ICON_SPECS = (               # (样式名, 元素标签, 字形:显示"切过去"的那个模式)
-    ("BellIcon.TButton", "Icon", None),        # ↻:换客户端,两种模式都一样
     ("BellTheme.TButton", "Theme", {"a": "☀", "b": "☾"}),
 )
 
@@ -501,11 +597,10 @@ def apply_bell_skin(mode=None):
             key = f"Bell{tag}_{m}"
             if key in _BELL_ELEMS:
                 continue
-            glyph = ("↻" if glyphs is None
-                     else glyphs[m] if isinstance(glyphs, dict) else glyphs)
+            glyph = glyphs[m] if isinstance(glyphs, dict) else glyphs
             imgs = _icon_images(glyph, pal)
             _BELL_IMGS[("btn", key)] = imgs
-            _ensure(key, imgs, 10)
+            _ensure(key, imgs, 1)     # 透明底图:border 大了会按 3x3 采样把字形切块
 
     # 把样式指向当前模式那套元素,并配上颜色
     for name, tag, fill_k, line_k, fg_k, gloss, pad, border in _BTN_SPECS:
@@ -516,13 +611,20 @@ def apply_bell_skin(mode=None):
         style.configure(name, background=c["bg"], foreground=c[fg_k],
                         borderwidth=0, focusthickness=0,
                         font=(ui_font, 10, "bold"), padding=pad)
-    # 无文字的圆形图标按钮(28x28):没有内边距,字号压到 1pt ——
-    # 空标签会按 TkDefaultFont 的行高把按钮撑成 28x40,圆角图跟着纵向拉伸。
+    # 无文字的图标按钮(28x28):没有内边距,字号压到 1pt ——
+    # 空标签会按 TkDefaultFont 的行高把按钮撑成 28x40,图跟着纵向拉伸。
     for name, tag, _glyphs in _ICON_SPECS:
         el = f"Bell{tag}_{_BELL_MODE}"
         _layout(name, el)
         style.configure(name, background=c["bg"], borderwidth=0,
                         focusthickness=0, padding=(0, 0), font=(ui_font, 1))
+        # **必须把 active/pressed 的背景也钉成窗口底色**:clam 的 TButton 在
+        # map 里给悬停/按下配了亮一档的底,图片透明后那圈方块就露出来了
+        # (2026-10-22 用户截图:悬停时图标后面多一块浅灰)。
+        style.map(name,
+                  background=[("active", c["bg"]), ("pressed", c["bg"]),
+                              ("disabled", c["bg"])],
+                  foreground=[("active", c["sub"]), ("pressed", c["sub"])])
     style.configure("Bell.TFrame", background=c["card"])
     style.configure("Bell.TLabel", background=c["card"], foreground=c["txt"],
                     font=(ui_font, 10))

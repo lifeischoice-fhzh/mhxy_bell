@@ -2,6 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('data/bell_layouts.json', 'data'),
+         ('data/bell.ico', 'data'),
          ('data/maps', 'data/maps')]
 binaries = []
 hiddenimports = ['PIL', 'mss']
@@ -37,6 +38,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon='data/bell.ico',
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

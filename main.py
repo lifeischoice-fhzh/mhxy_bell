@@ -53,6 +53,7 @@ def main():
         return tools_bell.cmd_layout()
 
     core._dpi_aware()
+    core.set_app_id()          # 任务栏当成独立应用,不然显示的是 pythonw 的图标
     App().run()
     return 0
 

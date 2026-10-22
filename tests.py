@@ -2584,6 +2584,27 @@ def sec_bell_ui():
     def _texts(win):
         return [t for t in (_txt(w) for w in _walk(win)) if t]
 
+    def _chip_txt(app):
+        """底行圆角框里那行字(画在 canvas 上,不是 Label)。"""
+        c = getattr(app, "bell_client_chip", None)
+        i = getattr(app, "_bell_chip_text_item", None)
+        if c is None or not c.winfo_exists() or not i:
+            return ""
+        try:
+            return str(c.itemcget(i, "text"))
+        except Exception:
+            return ""
+
+    def _chip_fg(app):
+        c = getattr(app, "bell_client_chip", None)
+        i = getattr(app, "_bell_chip_text_item", None)
+        if c is None or not c.winfo_exists() or not i:
+            return ""
+        try:
+            return str(c.itemcget(i, "fill"))
+        except Exception:
+            return ""
+
     from PIL import Image
     with Sandbox(), tempfile.TemporaryDirectory(prefix="keju_bellui_") as d:
         mdir = os.path.join(d, "data", "maps")
@@ -2634,15 +2655,27 @@ def sec_bell_ui():
                   not any("◆ 降妖伏魔 ◆" in _txt(w)
                           for w in _walk(app.bell_win)),
                   str(_texts(app.bell_win)))
-            check("小窗:底行两颗无文字圆钮(↻ 换客户端 / ☀·☾ 切主题)",
-                  _txt(app.bell_locate_btn) == ""
+            check("小窗:底行 = 角色名圆角框(带 ▾) + ☀/☾ 圆钮,没有单独的 ↻",
+                  hasattr(app, "bell_client_chip")
+                  and _chip_txt(app) == ui_bell.CLIENT_NONE
                   and _txt(app.bell_theme_btn) == ""
+                  and not hasattr(app, "bell_locate_btn")
+                  and not hasattr(app, "bell_client_lbl")
                   and not hasattr(app, "bell_min_btn")
                   and not hasattr(app, "bell_frame_btn")
                   and not hasattr(app, "bell_region_clear_btn"),
-                  f"{_txt(app.bell_locate_btn)!r}/"
-                  f"{_txt(app.bell_theme_btn)!r}/"
-                  f"{hasattr(app, 'bell_min_btn')}")
+                  f"{_chip_txt(app)!r}/{_txt(app.bell_theme_btn)!r}/"
+                  f"{hasattr(app, 'bell_locate_btn')}")
+            # 图标:标题栏/任务栏(最小化)挂 data/bell.ico;Tk 查询不到已设值,
+            # 这里验证文件在、格式对、iconbitmap() 不抛
+            from PIL import IcoImagePlugin
+            with open(core.ICON_PATH, "rb") as _fh:
+                _sizes = IcoImagePlugin.IcoFile(_fh).sizes()   # {(w, h), ...}
+            check("小窗:窗口图标挂上 data/bell.ico(含 16/256 两档)",
+                  os.path.exists(core.ICON_PATH)
+                  and (16, 16) in _sizes and (256, 256) in _sizes
+                  and app.bell_win.iconbitmap(core.ICON_PATH) == "",
+                  f"{core.ICON_PATH} sizes={sorted(_sizes)}")
             # ---- 深色 / 明亮两套皮肤:底行那颗 ☀/☾ 切,选择存进 ui_mode ----
             _dark, _light = ui_widgets.BELL_SKINS["a"], ui_widgets.BELL_SKINS["b"]
             check("主题:默认是深色(A)",
@@ -2689,61 +2722,56 @@ def sec_bell_ui():
                   and _edge_now == _edge_a and _edge_light == _edge_b,
                   f"{app.bell_body.cget('highlightthickness')} "
                   f"{_edge_now}/{_edge_light} 期望 {_edge_a}/{_edge_b}")
-            # 底行高度写死 28px,量一遍:按钮的下边缘得在底行里面(没被裁掉)
-            _foot = app.bell_locate_btn.master
-            _rows = (app.bell_locate_btn,)
-            _bottoms = {str(w): w.winfo_rooty() - _foot.winfo_rooty()
-                        + w.winfo_height() for w in _rows}
-            check("小窗:底行装得下 ↻ 按钮(不会被裁掉)",
-                  all(b <= _foot.winfo_height() for b in _bottoms.values())
-                  and _foot.winfo_height() > 0,
-                  f"底行高={_foot.winfo_height()} 按钮下边缘={_bottoms}")
-            # ↻ 跟着角色名走(用户 2026-10-21 要求):名字多长,按钮就跟到哪,
-            # 不是钉在某个 x 上;右边的 ☀/☾ 不受影响
-            _lbl, _loc = app.bell_client_lbl, app.bell_locate_btn
-            _lbl.configure(text="祭花′")
-            app.root.update_idletasks()
-            _x_short, _w_short = _loc.winfo_x(), _lbl.winfo_width()
-            _lbl.configure(text="梦幻西游 ONLINE")
-            app.root.update_idletasks()
-            _x_long, _w_long = _loc.winfo_x(), _lbl.winfo_width()
-            check("底行:↻ 紧跟角色名(名字越长越往右),不跟 ☀/☾ 抢位置",
-                  _x_long > _x_short
-                  and abs(_x_short - _w_short) <= 12
-                  and abs(_x_long - _w_long) <= 12
-                  and _loc.winfo_x() + _loc.winfo_width()
-                  < app.bell_theme_btn.winfo_x(),
-                  f"x {_x_short}->{_x_long} 名字宽 {_w_short}->{_w_long} "
-                  f"主题钮 x={app.bell_theme_btn.winfo_x()}")
-            # 两颗圆钮都没有文字:hover 时用底行那行字说明它在干什么
+            # 底行高度写死 28px,量一遍:框的下边缘得在底行里面(没被裁掉)
+            _foot = app.bell_client_chip.master
+            _chip = app.bell_client_chip
+            _bottom = (_chip.winfo_rooty() - _foot.winfo_rooty()
+                       + _chip.winfo_height())
+            check("小窗:底行装得下角色名框(不会被裁掉)",
+                  _bottom <= _foot.winfo_height() and _foot.winfo_height() > 0,
+                  f"底行高={_foot.winfo_height()} 框下边缘={_bottom}")
+            # 框宽按 7 个字定死(用户 2026-10-22:「最多显示7个字」,名字长就省略)
             ui_bell.set_client(app, "祭花′")
-            app.bell_locate_btn.event_generate("<Enter>", when="now")
-            app.root.update()
-            _hover_a = _txt(app.bell_client_lbl)
-            app.bell_locate_btn.event_generate("<Leave>", when="now")
-            app.root.update()
-            app.bell_theme_btn.event_generate("<Enter>", when="now")
-            app.root.update()
-            _hover_b = _txt(app.bell_client_lbl)
-            app.bell_theme_btn.event_generate("<Leave>", when="now")
-            app.root.update()
-            check("底行:hover 圆钮 -> 显示「换客户端」/「明亮模式」,移开还原角色名",
-                  _hover_a == "换客户端" and _hover_b == "明亮模式"
-                  and _txt(app.bell_client_lbl) == "祭花′",
-                  f"{_hover_a!r}/{_hover_b!r}/"
-                  f"{_txt(app.bell_client_lbl)!r}")
+            app.root.update_idletasks()
+            _w_short = int(_chip.cget("width"))
+            ui_bell.set_client(app, "梦幻西游 ONLINE 很长的角色名字")
+            app.root.update_idletasks()
+            _w_long = int(_chip.cget("width"))
+            check("底行:药丸宽度按 7 个字定死,长名字在框里省略不撑破",
+                  _w_short == _w_long == ui_bell.chip_width(app)
+                  and str(_chip.itemcget(app._bell_chip_text_item, "text"))
+                  .endswith("…")
+                  and _chip.winfo_x() + _chip.winfo_width()
+                  < app.bell_theme_btn.winfo_x(),
+                  f"框宽 {_w_short}->{_w_long} 期望 "
+                  f"{ui_bell.chip_width(app)} / 文字="
+                  f"{_chip.itemcget(app._bell_chip_text_item, 'text')!r}")
+            # 点击框:按下变金 -> 抬起重新定位一次(= 调 app.on_locate_clients)
             _c_gold = ui_widgets.bell_palette(app.bell_mode)["gold"]
             _c_sub = ui_widgets.bell_palette(app.bell_mode)["sub"]
+            ui_bell.set_client(app, "祭花′")
             app.root.update()
-            app.bell_locate_btn.event_generate("<Enter>", when="now")
-            app.root.update()
-            _hover_fg = str(app.bell_client_lbl.cget("fg"))
-            app.bell_locate_btn.event_generate("<Leave>", when="now")
-            app.root.update()
-            _rest_fg = str(app.bell_client_lbl.cget("fg"))
-            check("底行:提示用金色、角色名用灰色(同一个位置也要分得开)",
-                  _hover_fg == _c_gold and _rest_fg == _c_sub,
-                  f"{_hover_fg}/{_rest_fg}")
+            _fg_rest = _chip_fg(app)
+            app._bell_chip_press = True
+            ui_bell._draw_chip(app)
+            _fg_press = _chip_fg(app)
+            app._bell_chip_press = False
+            ui_bell._draw_chip(app)
+            check("底行:按住角色名框 -> 字变金色(点击感),松开恢复灰色",
+                  _fg_rest == _c_sub and _fg_press == _c_gold
+                  and _chip_fg(app) == _c_sub,
+                  f"{_fg_rest}/{_fg_press}/{_chip_fg(app)}")
+            with patch(find_client_windows=lambda: ([], [])):
+                app.bell_client_chip.event_generate("<Button-1>", when="now")
+                app.bell_client_chip.event_generate("<ButtonRelease-1>",
+                                                    when="now")
+                app.root.update()
+                check("底行:点一下角色名框 = 重新定位一次(没找到就地红字)",
+                      _chip_txt(app) == "没找到客户端"
+                      and _chip_fg(app) == ui_widgets.bell_palette(
+                          app.bell_mode)["red"],
+                      f"{_chip_txt(app)!r}/{_chip_fg(app)}")
+            ui_bell._stop_flash(app)
             ui_bell.set_client(app, "")
             # 字号是磅值(20pt 在 100% 下重排成 ~41px 高):头部行高必须由内容撑,
             # 写死高度会把地名/坐标上下裁掉(用户 2026-10-21 报"地图名显示不全")
@@ -2779,17 +2807,17 @@ def sec_bell_ui():
                       app.cfg["bell"]["bell_client"] == one[0][0]
                       and saved_bell.get("bell_client") == one[0][0],
                       str(saved_bell.get("bell_client")))
-                check("进功能:底行显示角色名(客户端矩形不再显示)",
-                      _txt(app.bell_client_lbl) == "祭花′"
-                      and _txt(app.bell_locate_btn) == ""
+                check("进功能:底行框里显示角色名(客户端矩形不再显示)",
+                      _chip_txt(app) == "祭花′"
+                      and not hasattr(app, "bell_locate_btn")
                       and not hasattr(app, "bell_coord_var"),
-                      _txt(app.bell_client_lbl))
+                      _chip_txt(app))
             with patch(find_client_windows=lambda: ([], [])):
                 app.engine.bell_tool.locate = lambda: 0
                 gui.App._enter_bell_slow(app)
-                check("进功能:没定位到 -> 底行写占位句(不写「自动定位」这种字)",
-                      _txt(app.bell_client_lbl) == ui_bell.CLIENT_NONE,
-                      _txt(app.bell_client_lbl))
+                check("进功能:没定位到 -> 框里写占位句(不写「自动定位」这种字)",
+                      _chip_txt(app) == ui_bell.CLIENT_NONE,
+                      _chip_txt(app))
             app.engine.bell_tool.locate = lambda: 0       # 还原(后面的用例靠它)
             shown_texts = _texts(app.bell_win)
 
@@ -2860,11 +2888,26 @@ def sec_bell_ui():
             mb.showwarning = lambda *a, **k: warns.append(a)
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE", [800, 100, 1615, 780])], [])):
+                import types as _types
                 app.on_locate_clients()
-                check("定位:单客户端 -> 只把角色名写在底行(矩形不再显示)",
-                      _txt(app.bell_client_lbl) == "梦幻西游 ONLINE"
+                app.root.update()
+                check("定位:单客户端也列出来(列表 1 行,不自动改选)",
+                      getattr(app, "bell_pick", None) is not None
+                      and len(getattr(app, "_bell_pick_choices", [])) == 1
+                      and _chip_txt(app) == ui_bell.CLIENT_NONE,
+                      f"{_chip_txt(app)} / "
+                      f"{len(getattr(app, '_bell_pick_choices', []) or [])}")
+                ui_bell._menu_click(app, _types.SimpleNamespace(
+                    y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
+                app.root.update()
+                check("定位:单客户端点行 -> 角色名写进底行框(矩形不再显示)",
+                      _chip_txt(app)
+                      == ui_bell._fit_text(ui_bell._chip_font(app),
+                                           "梦幻西游 ONLINE",
+                                           ui_bell.chip_width(app)
+                                           - ui_bell.CHIP_PAD * 2)
                       and not hasattr(app, "bell_coord_var"),
-                      _txt(app.bell_client_lbl))
+                      _chip_txt(app))
                 check("定位:单客户端也当场存下选择",
                       app.cfg["bell"]["bell_client"] == "梦幻西游 ONLINE",
                       app.cfg['bell'].get('bell_client'))
@@ -2873,52 +2916,153 @@ def sec_bell_ui():
                       [800, 100, 1615, 780])], [])):
                 app._set("bell_client", "")
                 app.on_locate_clients()
+                app.root.update()
+                ui_bell._menu_click(app, _types.SimpleNamespace(
+                    y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
+                app.root.update()
                 check("定位:真实标题只把角色名写在底行",
-                      _txt(app.bell_client_lbl) == "祭花′"
+                      _chip_txt(app) == "祭花′"
                       and app.cfg["bell"]["bell_client"].endswith(
                           "祭花′[29024311])"),
-                      f"{_txt(app.bell_client_lbl)} / "
+                      f"{_chip_txt(app)} / "
                       f"{app.cfg['bell'].get('bell_client')}")
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
                       [800, 100, 1811, 926]),
                      ("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 葬龙′[29023982])",
-                      [0, 0, 815, 680])], [])), \
-                    patch(mods=(ui_bell,), pick_client=lambda *a, **k: 1):
+                      [0, 0, 815, 680])], [])):
+                import tkinter as tk
+
+                def _tops():
+                    return [w for w in app.root.winfo_children()
+                            if isinstance(w, tk.Toplevel)]
+
+                _wins_before = len(_tops())
                 app.on_locate_clients()
-                check("定位:多开 -> 弹列表按角色名选一台(选完只认这一台)",
+                app.root.update()
+                check("定位:多开 -> 就在底行那个框里展开列表(不弹独立窗口)",
+                      getattr(app, "bell_pick", None) is not None
+                      and len(getattr(app, "_bell_pick_choices", [])) == 2
+                      and len(_tops()) == _wins_before,
+                      f"pick={getattr(app, 'bell_pick', None)} "
+                      f"choices={len(getattr(app, '_bell_pick_choices', []))}")
+                _menu = app.bell_pick
+                _menu_texts = [_menu.itemcget(i, "text")
+                               for i in _menu.find_all()
+                               if _menu.type(i) == "text"]
+                _name_items = [i for i in _menu.find_all()
+                               if _menu.type(i) == "text"
+                               and _menu.itemcget(i, "text") in ("祭花′",
+                                                                 "葬龙′")]
+                _pal = ui_widgets.bell_palette(app.bell_mode)
+                _name_style = {(str(_menu.itemcget(i, "font")),
+                                str(_menu.itemcget(i, "fill")))
+                               for i in _name_items}
+                check("定位:列表只写角色名(不显示大小),当前那台提亮其余灰",
+                      "祭花′" in _menu_texts and "葬龙′" in _menu_texts
+                      and not any("x" in t and t.replace("x", "").isdigit()
+                                  for t in _menu_texts)
+                      and _name_style
+                      == {(f"{{Microsoft YaHei UI}} {ui_bell.CLIENT_PT}",
+                           _pal["txt"]),
+                          (f"{{Microsoft YaHei UI}} {ui_bell.CLIENT_PT}",
+                           _pal["sub"])},
+                      f"{_menu_texts} {_name_style}")
+                # 方案 E:面板和药丸同宽、悬在药丸**上方**,窗口高度一步不动
+                _mh = int(_menu.cget("height"))
+                _row_ys = [int(float(_menu.coords(i)[1]))
+                           for i in _menu.find_all()
+                           if _menu.type(i) == "text"
+                           and _menu.itemcget(i, "text") in ("祭花′",
+                                                             "葬龙′")]
+                _gaps = {b - a for a, b in zip(_row_ys, _row_ys[1:])}
+                _chip_w = int(app.bell_client_chip.cget("width"))
+                check("定位:面板和药丸同宽、悬在药丸上方,行距统一,窗口不变高",
+                      int(_menu.cget("width")) == _chip_w
+                      and _mh == ui_bell.MENU_PAD_V * 2 + ui_bell.ROW_H * 2
+                      and len(_row_ys) == 2 and _gaps == {ui_bell.ROW_H}
+                      and _menu.winfo_rooty() + _mh
+                      <= app.bell_client_chip.winfo_rooty(),
+                      f"{_menu.cget('width')}x{_mh} ys={_row_ys} "
+                      f"chip_y={app.bell_client_chip.winfo_rooty()}")
+                _ovals = [i for i in _menu.find_all() if _menu.type(i) == "oval"]
+                check("定位:当前那台的金点在最右边",
+                      len(_ovals) == 1
+                      and int(float(_menu.coords(_ovals[0])[0])) + 3
+                      >= _chip_w - ui_bell.CHIP_PAD - 4
+                      and _menu.itemcget(_ovals[0], "fill") == _pal["gold"],
+                      f"{len(_ovals)} 个椭圆 "
+                      f"{[_menu.coords(i) for i in _ovals]}")
+                # 真点一下第二行(走命中判定,不是直接调 on_pick_client)
+                import types as _types
+                ui_bell._menu_click(
+                    app, _types.SimpleNamespace(y=_row_ys[-1]))
+                app.root.update()
+                check("定位:列表点选 -> 只认这一台(落盘+底行框+列表收起)",
                       app.cfg["bell"].get("bell_client")
-                      == "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 葬龙′[29023982])",
-                      app.cfg["bell"].get("bell_client"))
+                      == "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 葬龙′[29023982])"
+                      and _chip_txt(app) == "葬龙′"
+                      and getattr(app, "bell_pick", None) is None,
+                      f"{app.cfg['bell'].get('bell_client')} / "
+                      f"{_chip_txt(app)}")
                 check("定位:支持的两档分辨率不弹任何框",
                       pops == [] and warns == [], f"{pops} {warns}")
-            with patch(find_client_windows=lambda: ([], [])):
-                app.on_locate_clients()
-                _c_red = ui_widgets.bell_palette(app.bell_mode)["red"]
-                check("定位:没找到客户端 -> 底行就地提示(不弹模态框)",
-                      pops == []
-                      and _txt(app.bell_client_lbl) == "没找到客户端"
-                      and str(app.bell_client_lbl.cget("fg")) == _c_red,
-                      f"{pops} {_txt(app.bell_client_lbl)!r} "
-                      f"{app.bell_client_lbl.cget('fg')}")
+                # 再点一下药丸:没开 -> 重新列出来;开着 -> 收起(沿用原来那台)
+                ui_bell._chip_release(app)
                 app.root.update()
-                _pump(app.root, 1900)      # 提示自己会收回去,还原角色名
-                check("定位:就地提示过一会儿收回去(还原底行角色名)",
-                      _txt(app.bell_client_lbl) == ui_bell.CLIENT_NONE
-                      and str(app.bell_client_lbl.cget("fg"))
-                      == ui_widgets.bell_palette(app.bell_mode)["sub"],
-                      f"{_txt(app.bell_client_lbl)!r} "
-                      f"{app.bell_client_lbl.cget('fg')}")
+                check("定位:再点一下药丸 -> 列表重新展开",
+                      getattr(app, "bell_pick", None) is not None, "列表没开")
+                ui_bell._chip_release(app)
+                app.root.update()
+                check("定位:再点一下药丸 -> 收起且沿用原来那台",
+                      getattr(app, "bell_pick", None) is None
+                      and _chip_txt(app) == "葬龙′"
+                      and app.cfg["bell"].get("bell_client")
+                      == "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 葬龙′[29023982])",
+                      f"{_chip_txt(app)} "
+                      f"{app.cfg['bell'].get('bell_client')}")
+            with patch(find_client_windows=lambda: ([], [])):
+                # 真实光标要是恰好压在测试窗口上,Tk 会发真 Enter 把提示顶掉 ——
+                # 先把指针挪开,测完放回去(2026-10-22 实测被它坑过一次)
+                import ctypes as _ct
+
+                class _PT(_ct.Structure):
+                    _fields_ = [("x", _ct.c_long), ("y", _ct.c_long)]
+
+                _pt = _PT()
+                _ct.windll.user32.GetCursorPos(_ct.byref(_pt))
+                _ct.windll.user32.SetCursorPos(1, 1)
+                try:
+                    app.on_locate_clients()
+                    _c_red = ui_widgets.bell_palette(app.bell_mode)["red"]
+                    check("定位:没找到客户端 -> 底行框里就地红字(不弹模态框)",
+                          pops == []
+                          and _chip_txt(app) == "没找到客户端"
+                          and _chip_fg(app) == _c_red,
+                          f"{pops} {_chip_txt(app)!r} {_chip_fg(app)}")
+                    app.root.update()
+                    _pump(app.root, 1900)      # 提示自己会收回去,还原角色名
+                    check("定位:就地提示过一会儿收回去(还原底行角色名)",
+                          _chip_txt(app) == ui_bell.CLIENT_NONE
+                          and _chip_fg(app)
+                          == ui_widgets.bell_palette(app.bell_mode)["sub"],
+                          f"{_chip_txt(app)!r} {_chip_fg(app)}")
+                finally:
+                    _ct.windll.user32.SetCursorPos(_pt.x, _pt.y)
             app._bell_size_warned = ""
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE", [0, 0, 1291, 1025])], [])):
                 app.on_locate_clients()
+                ui_bell._menu_click(app, _types.SimpleNamespace(
+                    y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
                 _warn_txt = " ".join(str(v) for v in warns)
-                check("定位:不支持的分辨率 -> 弹框提醒改成 640x480 / 800x600",
+                check("定位:不支持的分辨率 -> 选完弹框提醒改成 640x480 / 800x600",
                       len(warns) == 1 and "640x480" in _warn_txt
                       and "800x600" in _warn_txt and "1291x1025" in _warn_txt,
                       _warn_txt or "没弹提醒")
                 app.on_locate_clients()
+                ui_bell._menu_click(app, _types.SimpleNamespace(
+                    y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
                 check("定位:同一个不支持尺寸只弹一次(不每拍刷屏)",
                       len(warns) == 1, str(warns))
 
@@ -3031,18 +3175,22 @@ def sec_bell_ui():
             app._set("bell_pos", [99999, 99999])
             app.bell_win.destroy()
             ui_bell.build_bell(app)
-            _req = (app.bell_win.winfo_reqwidth(),
-                    app.bell_win.winfo_reqheight())
             app._show_here(app.bell_win, pos=app._get("bell_pos"))
             _pump(app.root, 400)
+            # 期望值用**实际尺寸**算:centered 用请求尺寸的话,窗口真实高度
+            # 和请求差一两个像素,中心点就跟着偏(实测偶发)。
+            _actual = (app.bell_win.winfo_width(), app.bell_win.winfo_height())
             check("小窗:存的位置已经不在屏幕里 -> 退回居中",
                   ui_widgets.win_origin(app.bell_win)
-                  == ui_widgets.centered_xy(_req, _scr),
+                  == ui_widgets.centered_xy(_actual, _scr),
                   f"{ui_widgets.win_origin(app.bell_win)} 期望 "
-                  f"{ui_widgets.centered_xy(_req, _scr)}")
-            # 拖动后的位置要在退出时写进配置
+                  f"{ui_widgets.centered_xy(_actual, _scr)}")
+            # 拖动后的位置要在退出时写进配置(geometry 是异步的,泵到它生效为止)
             app.bell_win.geometry("+140+110")
-            app.root.update()
+            for _ in range(20):
+                _pump(app.root, 60)
+                if ui_widgets.win_origin(app.bell_win) == (140, 110):
+                    break
             app.save_bell_pos()
             check("小窗:退出时记住当前位置(下次摆回这儿)",
                   app.cfg["bell"].get("bell_pos") == [140, 110],

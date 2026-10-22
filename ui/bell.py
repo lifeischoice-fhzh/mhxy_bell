@@ -12,6 +12,7 @@ app.on_map_btn / app.on_map_detail)。**采集只是从界面移除**(用户定�
 """
 import re
 
+import core
 from tools import bell as tools_bell
 from ui import widgets as ui_widgets
 
@@ -30,6 +31,43 @@ EMPTY_TEXT = "暂无目标"              # 没有目标时占**地名位**(画�
 PULSE_FRAMES = (11, 13, 15, 15, 13, 11, 9, 8)   # 新目标:红点放大再回弹(半径,px)
 PULSE_MS = 25                                    # 每帧间隔,全程 ~175ms
 FLASH_MS = 1600                      # 底行就地提示停留时长(到点还原角色名)
+CHIP_H = 30                          # 框高度(收起时)
+CHIP_R = CHIP_H // 2                 # 圆角档:药丸和列表面板共用这一档(15)
+CHIP_PAD = 12                        # 框内文字左右留白
+CHIP_CHARS = 7                       # 框宽按 7 个字定(2026-10-22 用户定的)
+ROW_H = 24                           # 展开后每行名字的高度
+MENU_MAX_ROWS = 6                    # 展开最多列几台
+MENU_GAP = 4                         # 面板和框之间的缝
+MENU_PAD_V = 5                       # 面板上下留白
+CHIP_GAP = 7                         # (留用)名字和右侧元素的间距
+CHIP_W_FALLBACK = 156                # 取不到字体时的兜底宽
+DRAWER_W = 300                       # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
+DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
+_CHIP_W = {}                         # (字体, 字号) -> 药丸宽;算一次就够
+
+
+def _chip_font(app):
+    """药丸/列表共用的字体对象(按当前皮肤的字族建)。"""
+    import tkinter.font as tkfont
+    c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
+    return tkfont.Font(root=app.bell_win, font=(c["font"], CLIENT_PT))
+
+
+def chip_width(app):
+    """药丸宽度 = 左右留白 + 7 个字的宽(2026-10-22 用户定的:「最多显示7个字」)。
+
+    按真实字体量,不写死像素 —— 换台缩放比例不同的机器也正好是 7 个字。
+    """
+    try:
+        c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
+        key = (c["font"], CLIENT_PT)
+        w = _CHIP_W.get(key)
+        if not w:
+            w = int(_chip_font(app).measure("字" * CHIP_CHARS)) + CHIP_PAD * 2
+            _CHIP_W[key] = w
+        return w
+    except Exception:
+        return CHIP_W_FALLBACK
 DRAWER_W = 300                      # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
 DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
 
@@ -85,71 +123,111 @@ def _fit_name(app):
 
 
 def set_client(app, name):
-    """底行那句角色名;没定位到就写占位句(留空的话用户看不出是"没找到")。
-
-    真实文本记在 `app.bell_client_text` 上:鼠标停到圆钮上时底行要临时换提示,
-    移开再还原成它(见 `_hint`)。
-    """
+    """底行框里那句角色名;没定位到就写占位句(留空看不出是"没找到")。"""
     app.bell_client_text = (name or "").strip() or CLIENT_NONE
-    lbl = getattr(app, "bell_client_lbl", None)
-    if lbl is not None and lbl.winfo_exists():
-        lbl.configure(text=app.bell_client_text)
+    _draw_chip(app)
 
 
-def _hint(app, text):
-    """鼠标停在圆钮上:底行临时换一句说明;text 为空 = 还原角色名。
+def _chip_parts(app):
+    """底行框这一拍画什么:(色板, 文字, 字色)。
 
-    提示用金色,和灰色的角色名分开 —— 同一个位置同一种颜色,看起来像"名字变了"
-    (2026-10-21 用户提的)。
+    正在就地提示 -> 红字;按着不放 -> 金字(点击感);平时 -> 灰字。
     """
-    lbl = getattr(app, "bell_client_lbl", None)
-    if lbl is None or not lbl.winfo_exists():
-        return
-    _stop_flash(app)                       # 手动划过就接管,别让提示定时器再改字
     c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
-    if text:
-        lbl.configure(text=text, fg=c["gold"])
+    tip = getattr(app, "_bell_flash_text", "")
+    text = tip or getattr(app, "bell_client_text", "") or CLIENT_NONE
+    if tip:
+        fg = c["red"]
+    elif getattr(app, "_bell_chip_press", False):
+        fg = c["gold"]
     else:
-        lbl.configure(text=getattr(app, "bell_client_text", "") or CLIENT_NONE,
-                      fg=c["sub"])
+        fg = c["sub"]
+    return c, text, fg
+
+
+def _fit_text(font, text, max_px):
+    """文字超过 max_px 就末尾加省略号(框宽定死,长名字不能撑破)。"""
+    if font.measure(text) <= max_px:
+        return text
+    out = text
+    while out and font.measure(out + "…") > max_px:
+        out = out[:-1]
+    return (out + "…") if out else "…"
+
+
+def _draw_chip(app):
+    """画底行那个圆角药丸:只有角色名,没有三角(2026-10-22 用户定的)。
+
+    **宽度按 7 个字定死**(`chip_width`),名字太长末尾省略;圆角是 PIL 画的图
+    (`ui_widgets.chip_image`,按尺寸缓存)。列表展开与否不影响药丸本身。
+    """
+    cv = getattr(app, "bell_client_chip", None)
+    if cv is None or not cv.winfo_exists():
+        return
+    try:
+        c, text, fg = _chip_parts(app)
+        f_name = _chip_font(app)
+        w = chip_width(app)
+        cv.configure(width=w, height=CHIP_H)
+        cv.delete("all")
+        cv.create_image(0, 0, anchor="nw", image=ui_widgets.chip_image(
+            w, CHIP_H, bool(getattr(app, "_bell_chip_press", False))))
+        app._bell_chip_text_item = cv.create_text(
+            CHIP_PAD, CHIP_H // 2,
+            text=_fit_text(f_name, text, w - CHIP_PAD * 2), anchor="w",
+            fill=fg, font=(c["font"], CLIENT_PT))
+    except Exception:
+        pass
+
+
+def _chip_press(app, down):
+    """框的按下/抬起视觉(抬起后由绑定去调 `_chip_release`)。"""
+    app._bell_chip_press = bool(down)
+    _draw_chip(app)
+
+
+def _chip_release(app):
+    """点一下药丸:列表开着就收起,没开就重新找一遍并列出来(开/关一个点)。"""
+    if getattr(app, "_bell_menu_open", False):
+        close_client_menu(app)
+        return
+    app.on_locate_clients()
 
 
 def _stop_flash(app):
-    """撤掉底行还没到点的就地提示(不还原文字,还原是下一次写底行的事)。"""
+    """撤掉还没到点的底行提示(定时器 + 文案一起清)。"""
     aid = getattr(app, "_bell_flash", None)
     app._bell_flash = None
+    app._bell_flash_text = ""
     if aid:
         try:
-            app.bell_client_lbl.after_cancel(aid)
+            app.bell_client_chip.after_cancel(aid)
         except Exception:
             pass
 
 
-def flash_foot(app, text, color="red", ms=FLASH_MS):
-    """底行就地换一句提示(默认红字),到点还原角色名 —— **不弹模态框**。
+def flash_foot(app, text, ms=FLASH_MS):
+    """底行框里临时写一句提示(红字),到点还原角色名 —— **不弹模态框**。
 
     用户 2026-10-21 定的:点一下 ↻ 就弹个要点「确定」的框是打断游戏;
     提示放底行,瞥一眼就够,也不多占控件。
     """
-    lbl = getattr(app, "bell_client_lbl", None)
-    if lbl is None or not lbl.winfo_exists():
+    cv = getattr(app, "bell_client_chip", None)
+    if cv is None or not cv.winfo_exists():
         return
     _stop_flash(app)
-    c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
-    lbl.configure(text=text, fg=c[color])
+    app._bell_flash_text = text
+    _draw_chip(app)
 
     def done():
         app._bell_flash = None
+        app._bell_flash_text = ""
         try:
-            if not lbl.winfo_exists():
-                return
-            cc = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
-            lbl.configure(text=getattr(app, "bell_client_text", "")
-                          or CLIENT_NONE, fg=cc["sub"])
+            _draw_chip(app)
         except Exception:
             pass
 
-    app._bell_flash = lbl.after(ms, done)
+    app._bell_flash = cv.after(ms, done)
 
 
 def _split_target(text):
@@ -172,20 +250,25 @@ def build_bell(app):
     mode = str(app._get("ui_mode", "a") or "a")
     c = ui_widgets.apply_bell_skin(mode)
     app.bell_mode = ui_widgets.current_mode()
-    BG, TXT, SUB, GOLD, PAPER = (c["bg"], c["txt"], c["sub"], c["gold"],
-                                 c["paper"])
+    BG, TXT, GOLD, PAPER = c["bg"], c["txt"], c["gold"], c["paper"]
 
     app.bell_win = tk.Toplevel(app.root)
     app.bell_win.title("降妖伏魔 · 妖魔位置")
     app.bell_win.configure(bg=BG)
     app.bell_win.attributes("-topmost", True)
     app.bell_win.resizable(False, False)
+    # 标题栏 + 任务栏(最小化时)用同一把图标:金铃铛 + 红点(data/bell.ico)。
+    # **别在这里调 `iconbitmap`**:它走 LoadImage(LR_DEFAULTSIZE)=32px 那一档,
+    # 而且 Tk 会在窗口映射后再盖一次,把 `_dress` 挂上去的精确尺寸 HICON 顶掉
+    # —— 任务栏把 32px 缩到 30px,边缘就糊了(2026-10-22 用户拿旁边 Chrome/微信
+    # 对比:"你看糊不糊")。图标统一由 `_dress` 里的 `set_window_icon` 负责。
     # 标题栏:颜色要**窗口显示出来以后**再设才生效(建窗那一下设了会被系统盖回去);
     # 最大化按钮也在这里去掉,只留最小化 + 关闭。所以每次 <Map> 都刷一遍。
     def _dress(_e=None):
         ui_widgets.dark_titlebar(
             app.bell_win, ui_widgets.bell_palette(app.bell_mode)["titlebar"])
         ui_widgets.hide_maximize(app.bell_win)
+        ui_widgets.set_window_icon(app.bell_win, core.ICON_PATH)
 
     _dress()
     app.bell_win.bind("<Map>", _dress)
@@ -215,8 +298,9 @@ def build_bell(app):
                                 highlightthickness=0, bd=0)
     app.bell_canvas.pack(padx=PAD)
 
-    # 底行:左边「角色名 + 紧跟的 ↻(换客户端)」,右下角「☀/☾(切主题)」。
-    # 最小化/关闭走系统标题栏(不再放底行,重复)。
+    # 底行:左下角「角色名」圆角药丸(定宽 7 个字,无三角),点一下 = 重新定位
+    # 并把客户端列成浮层(2026-10-22 用户定的方案 E);右下角 ☀/☾ 切主题。
+    # 最小化/关闭走系统标题栏。
     foot = tk.Frame(body, bg=BG)
     foot.pack(fill="x", padx=PAD, pady=(12, 12))
     app.bell_foot = foot
@@ -224,21 +308,18 @@ def build_bell(app):
                                     style="BellTheme.TButton",
                                     command=app.on_toggle_theme)
     app.bell_theme_btn.pack(side="right")
-    app.bell_client_lbl = tk.Label(foot, text="", bg=BG, fg=SUB, anchor="w",
-                                   font=(c["font"], CLIENT_PT))
-    app.bell_client_lbl.pack(side="left")
-    # width=0:按 28x28 的图走自然尺寸(不写这行,ttk 会按主题默认宽 77px 摆)
-    app.bell_locate_btn = ttk.Button(foot, text="", width=0,
-                                     style="BellIcon.TButton",
-                                     command=app.on_locate_clients)
-    app.bell_locate_btn.pack(side="left", padx=(8, 0))
-    # 圆钮都没有文字:鼠标停上去时,**底行左侧那行字**临时换成它在干什么,
-    # 移开还原角色名(Tk 没有内置 tooltip,这是最省事又不加控件的做法)
-    app.bell_locate_btn.bind("<Enter>", lambda _e: _hint(app, "换客户端"))
-    app.bell_locate_btn.bind("<Leave>", lambda _e: _hint(app, ""))
-    app.bell_theme_btn.bind("<Enter>", lambda _e: _hint(
-        app, "深色模式" if app.bell_mode == "b" else "明亮模式"))
-    app.bell_theme_btn.bind("<Leave>", lambda _e: _hint(app, ""))
+    chip = tk.Canvas(foot, bg=BG, highlightthickness=0, bd=0, height=CHIP_H,
+                     width=chip_width(app), cursor="hand2")
+    chip.pack(side="left")
+    app.bell_client_chip = chip
+    app._bell_chip_press = False
+    app._bell_flash_text = ""
+    app._bell_menu_open = False
+    # 按下变金;抬起:列表开着 -> 收起,没开 -> 重新定位一次并列出来
+    chip.bind("<Button-1>", lambda _e: _chip_press(app, True))
+    chip.bind("<ButtonRelease-1>",
+              lambda _e: (_chip_press(app, False), _chip_release(app)))
+    chip.bind("<Leave>", lambda _e: _chip_press(app, False))
     set_client(app, "")
 
     # ---- 右侧抽屉(采集的界面入口已撤,控件照建:开抽屉走 `toggle_drawer`) ----
@@ -307,56 +388,101 @@ def _build_drawer(app):
     app.bell_detail_name = ""
 
 
-def pick_client(parent, choices, current=""):
-    """弹个小列表让用户选哪台客户端(多开时用)。根据角色名认。
+def close_client_menu(app):
+    """收起展开的角色名列表(选完 / 再点一次药丸 / 切主题都走这里,幂等)。"""
+    f = getattr(app, "bell_pick", None)
+    app.bell_pick = None
+    if f is not None:
+        try:
+            f.destroy()
+        except Exception:
+            pass
+    app._bell_menu_open = False
+    _draw_chip(app)
 
-    choices = [(角色名, 标题, 矩形)];返回选中的下标,取消返回 None。
+
+def _menu_click(app, event):
+    """列表里点哪一行 -> 交给 app.on_pick_client(i)。"""
+    idx = int((event.y - MENU_PAD_V) // ROW_H)
+    n = min(len(getattr(app, "_bell_pick_choices", []) or []), MENU_MAX_ROWS)
+    if 0 <= idx < n:
+        app.on_pick_client(idx)
+
+
+def show_client_menu(app, choices):
+    """点药丸:一块**和药丸同宽**的面板从它头上浮出来,盖在地图上(方案 E)。
+
+    面板里**只有客户端行**,几个列几个(不再有"当前名字"那格);每行名字左对齐,
+    **当前选中的那台在最右边带一个金点**、字也提亮;悬停整行亮一档(菜单的常规
+    反馈)。行距统一 `ROW_H`,只写角色名、不显示客户端大小,字号和
+    「暂未找到客户端」一致。超过 6 台只列 6 台;窗口尺寸从头到尾不变。
     """
     import tkinter as tk
-    from tkinter import ttk
 
+    close_client_menu(app)
     c = ui_widgets.apply_bell_skin()
-    win = tk.Toplevel(parent)
-    win.title("选一个客户端")
-    win.configure(bg=c["bg"])
-    win.resizable(False, False)
-    win.transient(parent)
-    ttk.Label(win, text="检测到多个客户端,选一个给降妖伏魔用:",
-              style="BellSection.TLabel").pack(anchor="w", padx=14, pady=(12, 6))
-    box = tk.Listbox(win, height=min(8, len(choices)), width=34,
-                     font=(c["font"], 10),
-                     activestyle="none", exportselection=False,
-                     relief="flat", highlightthickness=2,
-                     highlightbackground=c["line"], bg=c["paper"],
-                     fg=c["txt"], selectbackground=c["btn"],
-                     selectforeground=c["yellow"])
-    for i, (name, title, rect) in enumerate(choices):
-        box.insert("end", f"{name}    {rect[2]-rect[0]}x{rect[3]-rect[1]}")
-        if current and (title == current or name == current):
-            box.selection_set(i)
-            box.see(i)
-    if not box.curselection():
-        box.selection_set(0)
-    box.pack(fill="both", expand=True, padx=14)
-    out = {"i": None}
+    rows = list(choices[:MENU_MAX_ROWS])
+    n = len(rows)
+    foot = app.bell_foot
+    chip = app.bell_client_chip
+    x = foot.winfo_x() + chip.winfo_x()
+    chip_top = foot.winfo_y() + chip.winfo_y()
+    w = chip.winfo_width() or chip_width(app)
+    f = _chip_font(app)
+    h = MENU_PAD_V * 2 + ROW_H * n
+    y = chip_top - MENU_GAP - h
+    want = str(app._get("bell_client") or "")
+    hover_bg = ui_widgets._shade(c["btn"], 16)
 
-    def ok():
-        sel = box.curselection()
-        out["i"] = int(sel[0]) if sel else None
-        win.destroy()
+    cv = tk.Canvas(app.bell_body, bg=c["bg"], highlightthickness=0, bd=0,
+                   width=w, height=h, cursor="hand2")
+    cv.place(x=x, y=y, width=w, height=h)
 
-    row = ttk.Frame(win, style="Bell.TFrame", padding=(14, 10))
-    row.pack(fill="x")
-    ttk.Button(row, text="就用这台", style="BellGold.TButton",
-               command=ok).pack(side="right")
-    ttk.Button(row, text="取消", style="Bell.TButton",
-               command=win.destroy).pack(side="right", padx=(0, 8))
-    box.bind("<Double-Button-1>", lambda _e: ok())
-    win.bind("<Return>", lambda _e: ok())
-    ui_widgets.set_place(win)
-    win.grab_set()
-    parent.wait_window(win)
-    return out["i"]
+    def render(hover):
+        cv.delete("all")
+        cv.create_image(0, 0, anchor="nw", image=ui_widgets.chip_image(
+            w, h, radius=CHIP_R))
+        if 0 <= hover < n:
+            cv.create_rectangle(CHIP_R - 10, MENU_PAD_V + ROW_H * hover,
+                                w - (CHIP_R - 10),
+                                MENU_PAD_V + ROW_H * (hover + 1),
+                                fill=hover_bg, outline="")
+        for k, (who, title, _r) in enumerate(rows):
+            cy = MENU_PAD_V + ROW_H * k + ROW_H // 2
+            cur = bool(title) and title == want
+            cv.create_text(CHIP_PAD, cy,
+                           text=_fit_text(f, who, w - CHIP_PAD * 2 - 12),
+                           anchor="w", fill=c["txt"] if cur else c["sub"],
+                           font=(c["font"], CLIENT_PT))
+            if cur:                  # 当前那台:金点顶到最右边
+                cx = w - CHIP_PAD - 3
+                cv.create_oval(cx - 3, cy - 3, cx + 3, cy + 3,
+                               fill=c["gold"], outline="")
+
+    def hover_of(y):
+        k = int((y - MENU_PAD_V) // ROW_H)
+        return k if 0 <= k < n else -1
+
+    state = {"k": -1}
+
+    def on_move(e):
+        k = hover_of(e.y)
+        if k != state["k"]:
+            state["k"] = k
+            render(k)
+
+    def on_leave(_e):
+        if state["k"] != -1:
+            state["k"] = -1
+            render(-1)
+
+    render(-1)
+    app.bell_pick = cv
+    cv.tk.call("raise", str(cv))   # Canvas 的 .lift() 是 tag_raise,提控件要这么叫
+    cv.bind("<Button-1>", lambda e: _menu_click(app, e))
+    cv.bind("<Motion>", on_move)
+    cv.bind("<Leave>", on_leave)
+    app._bell_menu_open = True
 
 
 def refresh_drawer(app):
@@ -473,6 +599,7 @@ def apply_theme(app, mode=None):
     win = getattr(app, "bell_win", None)
     if win is None or not win.winfo_exists():
         return
+    close_client_menu(app)     # 浮层颜色是开层时刷死的,切主题直接收掉
     win.configure(bg=c["bg"])
     for name in ("bell_body", "bell_head", "bell_foot", "bell_drawer"):
         f = getattr(app, name, None)
@@ -487,9 +614,11 @@ def apply_theme(app, mode=None):
                             fg=c["sub"] if getattr(app, "bell_idle", True)
                             else c["txt"])
     app.bell_coord.configure(bg=c["bg"], fg=c["gold"])
-    app.bell_client_lbl.configure(bg=c["bg"])
-    if not getattr(app, "_bell_flash", None):     # 正在提示:字色留给提示自己
-        app.bell_client_lbl.configure(fg=c["sub"])
+    try:
+        app.bell_client_chip.configure(bg=c["bg"])
+    except Exception:
+        pass
+    _draw_chip(app)                     # 框的底图/字色按新皮肤重画
     app.bell_canvas.configure(bg=c["paper"])
     ui_widgets.dark_titlebar(win, c["titlebar"])
     app._bell_spot = object()          # 逼重画:画布底/文字色/红点都要跟着换

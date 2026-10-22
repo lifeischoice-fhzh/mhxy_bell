@@ -28,6 +28,7 @@ else:
     _BUNDLE_DIR = BASE_DIR
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 LOG_PATH = os.path.join(BASE_DIR, "bell.log")
+ICON_PATH = os.path.join(BASE_DIR, "data", "bell.ico")   # 窗口/任务栏图标
 
 DEFAULT_CONFIG = {
     "use_gpu": True,     # OCR 用显卡加速(DirectML),失败自动回退 CPU
@@ -69,6 +70,14 @@ def ensure_data_files():
             shutil.copyfile(src, dst)
         except Exception:
             pass
+    # 窗口图标同理:打包版在 _internal 里,镜像到程序目录的 data/ 才挂得上。
+    src = os.path.join(_BUNDLE_DIR, "data", "bell.ico")
+    dst = os.path.join(BASE_DIR, "data", "bell.ico")
+    if (src != dst and os.path.isfile(src) and not os.path.exists(dst)):
+        try:
+            shutil.copyfile(src, dst)
+        except Exception:
+            pass
 
 
 def check_deps() -> list[str]:
@@ -93,6 +102,19 @@ def _dpi_aware():
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
             pass
+
+
+def set_app_id(app_id="MHXY.Bell"):
+    """让 Windows 把本进程当成**独立应用**(2026-10-22)。
+
+    不设的话任务栏按 pythonw.exe 归组、显示 Python 的图标 —— 窗口自己的
+    图标(`ui_widgets.set_window_icon`)就看不见了(用户报"图标没换")。打包成
+    exe 之后这条其实可有可无,但源码运行必须它。
+    """
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
 
 
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)

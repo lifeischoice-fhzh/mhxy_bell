@@ -38,6 +38,7 @@ KEEP_MAPS = ("calib.json",)
 # 它们镜像到 exe 旁边的 data/ —— 那份是运行时数据,首次打包时还不存在。
 REQUIRED = (
     "_internal/data/bell_layouts.json",
+    "_internal/data/bell.ico",             # 窗口/任务栏/exe 图标(标题栏那把)
     "_internal/data/maps/bounds.json",
     "_internal/data/maps/calib.json",
     "_internal/data/maps/宝象国.png",      # 六张底图随仓库分发:少一张就是 datas 漏了

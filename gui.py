@@ -124,6 +124,11 @@ class App:
         self.root = tk.Tk()
         # 按钮回调里没接住的异常,默认只打到 stderr(用户根本看不到);记进日志
         self.root.report_callback_exception = self._on_tk_error
+        # 默认图标:所有 Toplevel 都跟着用(小窗自己还会再挂一次)
+        try:
+            self.root.iconbitmap(default=core.ICON_PATH)
+        except Exception:
+            pass
         self.root.withdraw()           # 主窗口不露面:界面就是降妖伏魔小窗
         self.cfg = core.load_config()
         # 第一次跑(没选过皮肤)跟随系统深浅色;选过就以配置为准(2026-10-21)
@@ -187,9 +192,16 @@ class App:
             n_wins = 0
             self.log(f"[铃铛]自动定位失败: {err}")
         if n_wins:
-            # 定位结果当场存下来(单台也存):底行显示角色名;
-            # 多开时顺便让用户按角色名选一台(选过就不再弹)。
-            self._ask_bell_client()
+            # 定位结果当场存下来(单台也存):底行显示角色名;多开且没选过时,
+            # 主窗浮层里点一台(2026-10-22 起不再弹独立窗口,也不阻塞扫描)。
+            choices = tools_bell.client_choices()
+            want = str(self._get("bell_client") or "")
+            if len(choices) <= 1:
+                if choices:
+                    self._set("bell_client", choices[0][1])
+            elif not want:
+                self._bell_pick_choices = list(choices)
+                ui_bell.show_client_menu(self, choices)
             rect = self._bell_client_rect()
             self._refresh_bell_locate(rect)
             self.log(f"[铃铛]发现 {n_wins} 个客户端,已按整个客户端定位")
@@ -251,45 +263,47 @@ class App:
         self.log(f"[铃铛]界面换成{'明亮' if mode == 'b' else '深色'}模式")
 
     def on_locate_clients(self):
-        """重新找客户端(底行那个 ↻);多开时弹列表让用户按角色名选一台。"""
+        """重新找客户端(点左下角那个药丸)。
+
+        找到几台就列几台(用户 2026-10-22 定的:列表直接列当前所有客户端),
+        由用户点名;一台也没有就地提示「没找到客户端」。
+        """
         found, _mini = core.find_client_windows()
         if not found:
             self._refresh_bell_locate(None)
-            # 就地提示,不弹模态框(2026-10-21 用户定的):点一下 ↻ 不该打断游戏
+            # 就地提示,不弹模态框(2026-10-21 用户定的):点一下不该打断游戏
             ui_bell.flash_foot(self, "没找到客户端")
             self.log("[铃铛]没找到客户端窗口")
             return
-        if not self._ask_bell_client(force=len(found) > 1):
-            return
-        rect = [int(v) for v in (self._bell_client_rect()
-                                 or [int(v) for _t, v in found[:1]])]
-        self._refresh_bell_locate(rect)
-        self.log(f"[铃铛]已定位客户端 ({rect[0]},{rect[1]})-({rect[2]},{rect[3]})")
-        self._warn_bell_size_rect(rect)
-
-    def _ask_bell_client(self, force=False):
-        """多开时让用户按角色名选一台(降妖伏魔只认一台)。返回 True = 有可用客户端。
-
-        force=True:点「自动定位」时即便选过也重新问一次。
-        """
         choices = tools_bell.client_choices()
-        if not choices:
-            return False
-        if len(choices) == 1:                 # 只有一台:直接认它,别打扰
-            self._set("bell_client", choices[0][1])
-            self._save_cfg()                  # 定位到就落盘,下次进来看得到
-            return True
-        want = str(self._get("bell_client") or "")
-        if want and not force:
-            return True                       # 选过了就不弹
-        pick = ui_bell.pick_client(self.bell_win, choices,
-                                   current=want if force else "")
-        if pick is None:
-            return bool(want)                 # 取消了:保留原来的选择
-        self._set("bell_client", choices[pick][1])
+        if not choices:                      # 有窗口但抠不出名字:按整窗定位
+            self._refresh_bell_locate([int(v) for _t, v in found[:1]])
+            return
+        # 浮层列出来,点哪台用哪台;选择记在 app 上,行回调取用
+        self._bell_pick_choices = list(choices)
+        ui_bell.show_client_menu(self, choices)
+
+    def on_pick_client(self, index):
+        """列表里点了一台:选定它,收起列表。"""
+        choices = getattr(self, "_bell_pick_choices", []) or []
+        if not 0 <= index < len(choices):
+            return
+        name, title = choices[index][0], choices[index][1]
+        ui_bell.close_client_menu(self)
+        self._apply_bell_client(title, name)
+
+    def _apply_bell_client(self, title, name="", rect=None):
+        """选定客户端收尾:落盘、刷底行、日志、分辨率提醒(单台/浮层共这一条路)。"""
+        self._set("bell_client", title)
         self._save_cfg()
-        self.log(f"[铃铛]选定的客户端:{choices[pick][0]}")
-        return True
+        if name:
+            self.log(f"[铃铛]选定的客户端:{name}")
+        rect = rect or self._bell_client_rect()
+        self._refresh_bell_locate(rect)
+        if rect:
+            self.log(f"[铃铛]已定位客户端 ({rect[0]},{rect[1]})"
+                     f"-({rect[2]},{rect[3]})")
+        self._warn_bell_size_rect(rect)
 
     def _bell_client_rect(self):
         """选定的那台客户端现在在哪(按标题/角色名匹配);找不到返回 None。"""
