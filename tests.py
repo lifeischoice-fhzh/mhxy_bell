@@ -1468,6 +1468,44 @@ def sec_bell():
               and _gst.trk_mode == "none",
               f"{_gt.spot} {_gst.trk_mode} {_gst.trk_pub}")
 
+        # ④**区域变了(窗口挪动)不抹任务栏的"盯"**(2026-10-24 真机抓到的):
+        # 逐妖蛊虫的第二坐标多半在对话框关掉之后才刷出来,这几十秒里窗口挪一
+        # 像素,原来整份 SlotState 换新、trk_mode 抹回 none —— 等坐标的循环悄悄
+        # 死掉,任务栏一次都不再读(真机:15:01:12 开的 item 周期,15:01:17 窗口
+        # 一动,到下个周期 90 秒里任务栏 0 次 OCR,第二坐标全程没拿到)。
+        _gu["trk"] = "去宝象国(24,51)使用逐妖蛊虫,然后跟着地上的蛊虫找到妖魔。"
+        _gd["text"] = "去宝象国(24,51)使用逐妖蛊虫,然后妖魔就会出现。"
+        # 挪窗那一刻任务栏框要**重新从表里种**,所以配一张只带 trk 的表;
+        # dlg 故意不写 —— 写了就走"固定框"那条路,_Shot 的暗面板不在那块上
+        import tempfile as _tf_mv
+        _mv_lay = os.path.join(_tf_mv.mkdtemp(prefix="keju_layout_"), "b.json")
+        _mv_reg = [40, 20, 1000, 860]                  # 窗口挪了、也小了一号
+        _mv_trk = [600, 173, 980, 472]                 # 裁剪尺寸跟 _tr2 一样
+
+        with patch(mods=(tools_bell,), LAYOUT_PATH=_mv_lay):
+            tools_bell.save_layout((960, 840), trk=list(_mv_trk))
+            _vt = _bell_tool({}, _ocr_g)
+            for _ in range(4):
+                _vt._ts = 0.0
+                _vt.tick(force=True)
+            check("区域变了:前置 —— 对话框先开出 item 周期(任务栏在盯)",
+                  _vt._slot[1].trk_mode == "item"
+                  and _vt.spot == ("宝象国", 24, 51),
+                  f"{_vt._slot[1].trk_mode} {_vt.spot}")
+            _gd["text"] = ""                           # 玩家把对话框点掉了
+            _vt.regions = lambda: [list(_mv_reg)]      # ← 窗口挪了
+            _gu["trk"] = "◆蛊虫发现妖魔在建邺城(15,122),快去降服他吧。"
+            _vt._ts = 0.0
+            _vt.tick(force=False)                      # 挪窗后第一拍:状态换新
+            _mode_after_move = _vt._slot[1].trk_mode   # 取值!等下会被收手改掉
+            for _ in range(3):
+                _vt._ts = 0.0
+                _vt.tick(force=True)                   # 新坐标连读两次 -> 报
+            check("区域变了(窗口挪动):任务栏的盯不作废 —— 第二坐标照样拿到",
+                  _mode_after_move == "item"
+                  and _vt.spot == ("建邺城", 15, 122),
+                  f"挪窗后 {_mode_after_move},最终 {_vt.spot}")
+
         # ③任务栏那个值必须**自己**出现过两次才算数(原来把 confirmed() 当布尔用、
         #   报的却是最新那次读数 —— "历史里有个稳定值"就放行一次单发读花;实测
         #   23:59:07 连着 5 次都对、第 6 次读成 (118,28) 就报了,红点在

@@ -1758,7 +1758,25 @@ class BellTool(threading.Thread):
             # 两档的框都量过,不存在"现场找"这条路了)。
             _trk_seed = layout_trk((region[2] - region[0],
                                     region[3] - region[1]))
+            # **任务栏那侧的"盯"不作废**(2026-10-24 真机抓到的):逐妖蛊虫的
+            # 第二个坐标多半在对话框关掉之后才刷出来,这几十秒里窗口挪一像素
+            # 就把整份状态换新、trk_mode 抹回 none —— 等新坐标的循环悄悄死掉,
+            # 任务栏一次都不再读(心跳节奏退回 0.60s、OCR 0 次),第二坐标全程
+            # 拿不到。所以换新时把"盯什么、读到过什么"原样带过去(trk_mode/gap/
+            # hist/text/last/stale/pub/miss),几何相关的(region/框/签名/时刻)
+            # 照旧换新 —— trk_ts/trk_psig 归零,换新后第一拍立刻重读一次;
+            # 换客户端的话,下一张对话框开新周期会重新定类型。
+            _old = st
             st = SlotState(region=tuple(region), trk=_trk_seed)
+            if _old is not None:
+                st.trk_mode = _old.trk_mode
+                st.trk_gap = _old.trk_gap
+                st.trk_hist = _old.trk_hist
+                st.trk_text = _old.trk_text
+                st.trk_last = _old.trk_last
+                st.trk_stale = _old.trk_stale
+                st.trk_pub = _old.trk_pub
+                st.miss = _old.miss
             if _trk_seed:
                 self.app.log(f"[{TAG}]任务栏框用表里量的那格 "
                              f"{tuple(_trk_seed)}(这个尺寸只扫这里)")
