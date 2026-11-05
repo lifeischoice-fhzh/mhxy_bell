@@ -30,6 +30,24 @@ def _ensure_console():
             pass
 
 
+def _low_priority():
+    """进程降到「低于标准」优先级:游戏在前台时调度器先排游戏。
+
+    用户反馈开着本工具"游戏/系统被拖卡" —— 扫描线程的截图/OCR 是周期性
+    突发,和游戏抢时间片。降一档优先级后,忙时不抢、闲时照常跑,扫描节奏
+    不受影响(每一拍只有几毫秒,让一让根本轮不到排队)。失败(旧系统/受限
+    环境)就当没这回事,不影响启动。
+    """
+    try:
+        import ctypes
+        BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(),
+                                  BELOW_NORMAL_PRIORITY_CLASS)
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="梦幻西游降妖伏魔助手")
     ap.add_argument("--layout", action="store_true",
@@ -39,6 +57,13 @@ def main():
 
     if args.layout:
         _ensure_console()          # 打包版才有意义,源码运行无副作用
+    else:
+        # 工具只许开一个:已有实例就弹框退场(--layout 是命令行量表,不拦方便并用)
+        if not core.single_instance():
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0, "降妖伏魔已经在运行,不能重复打开。", "降妖伏魔", 0x40)
+            return 0
     core.ensure_data_files()
 
     missing = core.check_deps()
@@ -53,6 +78,7 @@ def main():
         return tools_bell.cmd_layout()
 
     core._dpi_aware()
+    _low_priority()
     core.set_app_id()          # 任务栏当成独立应用,不然显示的是 pythonw 的图标
     App().run()
     return 0

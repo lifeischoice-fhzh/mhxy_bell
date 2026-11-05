@@ -227,7 +227,10 @@ DIALOG_GAP = 2.0                         # 面板内容没变时,这么久兜底
 # 非铃铛面板(买东西/闲聊/聊天频道)的内容一直在滚:变了也别每拍都读 —— 真机
 # 上这种占 OCR 的大头(2026-10-21 会话:490 秒里 267 次 OCR 全是它,每次一两百
 # 毫秒,全白烧)。铃铛面板(`dlg_bell=True`)不受影响:翻页要当轮重读。
-DIALOG_OTHER_GAP = 0.6
+# 2026-10-31 用户反馈"游戏被拖卡"又从 0.6 放宽到 1.2:每次识别都是一截 GPU
+# 爆发(DirectML 中位 ~0.7s),白读减半;代价只是"从非铃铛面板换到铃铛面板"
+# 最多晚 1.2 秒认出来(本来也在秒级节奏里)。
+DIALOG_OTHER_GAP = 1.2
 SIG_MIN = 10.0                           # 面板内容签名差多少算"这页换了"
 PEND_TTL = 10.0                          # 待确认的对话框值最多挂这么久(面板消失/读不到
 # 持续超过它就作废)—— 2026-10-17:重扫撞上面板暗比 0.59(阈值 0.60)被判"消失",
@@ -1186,6 +1189,17 @@ def supported_size(size):
     return layout_for(size) is not None
 
 
+# 支持的两档**游戏设置口径**分辨率(对应表里的窗口 815x680 / 1011x826)。
+# 文案(日志/弹框)一律走 `supported_res_text`,别再手写死数字 —— 2026-11-05
+# 加第二档支持/改档位时只动这一个地方(抄 keju 的 supported_res_text)。
+SUPPORTED_GAME_RES = ((640, 480), (800, 600))
+
+
+def supported_res_text():
+    """「640×480 / 800×600」这样的支持档文案,日志与弹框共用一份。"""
+    return " / ".join(f"{w}×{h}" for w, h in SUPPORTED_GAME_RES)
+
+
 def layout_for(size):
     """这个客户端尺寸的**对话框框**(相对窗口左上角)或 None。"""
     return (layout_row(size) or {}).get("dlg") or None
@@ -1440,6 +1454,7 @@ class SlotState:
     dlg_sample: tuple | None = None     # 非铃铛对话框的样本(part, blocks, ms),心跳带一条
     dlg_pend: tuple | None = None       # 待确认的改口值(两遍一致才放行)
     dlg_gone: float = 0.0               # 面板开始读不到的时刻(dlg_pend 的 TTL 从这儿算)
+    dlg_ms: float = 0.0                 # 上次读对话框的耗时(ms),慢机器自适应间隔用
 
 
 class BellTool(threading.Thread):
@@ -1617,7 +1632,7 @@ class BellTool(threading.Thread):
             if getattr(self, "_warned_size", "") != label:
                 self._warned_size = label
                 self.app.log(f"[{TAG}]客户端尺寸 {label} 不支持 —— 只支持 "
-                             "640x480 / 800x600 两档分辨率,请在游戏设置里改一下")
+                             f"{supported_res_text()} 两档分辨率,请在游戏设置里改一下")
         return None
 
     def dialog_rect(self, region):
@@ -1839,12 +1854,19 @@ class BellTool(threading.Thread):
                 # 但变的是别人的聊天,不是我们的任务。给"变了就重读"加一道最小间隔
                 # (2026-10-21 真机会话:490 秒里 267 次 OCR 全是这种白读,每次一两
                 # 百毫秒)。铃铛面板不受影响:翻页要当轮重读。
+                # 间隔下限跟着"上一读实际耗时"放大:识别快的机器还是 0.6~1.2s;
+                # CPU 回退的慢机器一读就是两三秒,还按固定间隔就是背靠背白烧
+                # (2026-11-03 用户机器日志:面板开着时 OCR 一秒不歇,游戏被 CPU
+                # 爆发拖卡)。
+                other_gap = max(DIALOG_OTHER_GAP, st.dlg_ms / 1000.0 * 1.2)
                 if (changed and not st.dlg_bell
-                        and now - st.dlg_ts < DIALOG_OTHER_GAP):
+                        and now - st.dlg_ts < other_gap):
                     changed = False
                 # 确认**不是铃铛任务**的对话框(买东西/闲聊那些):内容没变就别按
                 # 节奏重读了 —— 真机上这种占八成,每次白烧一百多毫秒。
-                due = (now - st.dlg_ts >= DIALOG_GAP
+                # 铃铛面板的兜底间隔同理自适应(见上面那条的注释)。
+                due_gap = max(DIALOG_GAP, st.dlg_ms / 1000.0 * 1.2)
+                due = (now - st.dlg_ts >= due_gap
                        and st.dlg_bell)
                 # **有待确认的新坐标时,0.3 秒就再读一遍**(用户定的"立刻马上再读一次,
                 # 两次相同放行"):重扫那拍要是撞上面板闪一下/读花,别干等 2 秒的
@@ -1873,6 +1895,7 @@ class BellTool(threading.Thread):
                                                 limit=DLG_LIMIT_SIDE,
                                                 limit_type=DLG_LIMIT_TYPE)
                     st.dlg_ts = now
+                    st.dlg_ms = ms          # 自适应间隔的依据(见上面 other_gap/due_gap)
                     if blocks is not None:
                         # 对话框里那句可能是"踪迹在…"也可能是"去X(x,y)使用招魂帖",
                         # 两种都算对话框说的 —— 别只取一种把招魂帖那种漏掉

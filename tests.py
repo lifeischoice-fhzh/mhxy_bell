@@ -842,18 +842,37 @@ def sec_bell():
     win.flap = not win.flap                   # 又滚了一下
     tool_f._ts = 0.0
     tool_f.tick(force=False)                  # 0.6 秒内:哪怕"变了"也不读
-    check("非铃铛面板:内容一直滚也不再每拍重读(0.6 秒内顶多一次)",
+    check("非铃铛面板:内容一直滚也不再每拍重读(1.2 秒内顶多一次)",
           tool_f._stat["ocr"] == _ocr0 + 1
           and not any("妖魔位置" in m for m in app_f.logs[_n4:]),
           f"OCR {_ocr0} -> {tool_f._stat['ocr']}")
-    tool_f._slot[1].dlg_ts -= 1.0             # 把"上次读"拨回一秒前:该再读了
+    tool_f._slot[1].dlg_ts -= 2.0             # 把"上次读"拨回两秒前:过了 1.2 秒的间隔,该再读了
     tool_f._ts = 0.0
     tool_f.tick(force=False)                  # 字还停在上次读之后的那个样子
-    check("非铃铛面板:滚动的字还是按 0.6 秒的节奏重读(别漏了真任务换页)",
+    check("非铃铛面板:滚动的字还是按 1.2 秒的节奏重读(别漏了真任务换页)",
           tool_f._stat["ocr"] == _ocr0 + 2
           and tool_f._stat["dlg_gate"] == _gate0 + 2
           and not any("妖魔位置" in m for m in app_f.logs[_n4:]),
           f"OCR={tool_f._stat['ocr']} gate={tool_f._stat['dlg_gate']}")
+    # 间隔跟着"上一读耗时"自适应:慢机器(CPU 回退,一读两三秒)不再背靠背
+    # 白烧 —— 2026-11-03 用户机器日志:面板开着时 OCR 一秒不歇,游戏被拖卡。
+    tool_f._slot[1].dlg_ms = 3000.0          # 模拟慢机器:一次读 3 秒 -> 间隔 3.6s
+    tool_f._slot[1].dlg_ts -= 2.0            # 两秒没读了 —— 按常数该读,按自适应还不够
+    win.flap = not win.flap
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)
+    check("非铃铛面板:读得慢时间隔自动放大(2s < 3.6s,不读)",
+          tool_f._stat["ocr"] == _ocr0 + 2
+          and tool_f._stat["dlg_gate"] == _gate0 + 2,
+          f"OCR={tool_f._stat['ocr']} gate={tool_f._stat['dlg_gate']}")
+    tool_f._slot[1].dlg_ts -= 2.0            # 再拨:4s ≥ 3.6s,该读了
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)
+    check("非铃铛面板:过了自适应间隔照常重读(自适应不改功能)",
+          tool_f._stat["ocr"] == _ocr0 + 3
+          and tool_f._stat["dlg_gate"] == _gate0 + 3,
+          f"OCR={tool_f._stat['ocr']} gate={tool_f._stat['dlg_gate']}")
+    tool_f._slot[1].dlg_ms = 0.0             # 还原,别影响后面的用例
     win.flap = False                          # 还原:后面的用例按原画面断言
 
     # 对话框第二遍那一拍(`again`)**任务栏整支跳过**(2026-10-16 检视定的):那一拍带着
@@ -2544,6 +2563,52 @@ def sec_bell():
     tools_bell.cursor_pos = _orig_cursor
     core.find_client_windows = _orig_find
 
+    # ---- 退出扫尾:__pycache__/旧日志删掉,当次日志留着(2026-10-31) ----
+    with tempfile.TemporaryDirectory(prefix="bell_clean_") as cd:
+        _pc = os.path.join(cd, "__pycache__")
+        _pt = os.path.join(cd, "tools", "__pycache__")
+        _pu = os.path.join(cd, "ui", "__pycache__")
+        for d in (_pc, _pt, _pu):
+            os.makedirs(d)
+            with open(os.path.join(d, "x.pyc"), "w") as f:
+                f.write("junk")
+        _log_old = os.path.join(cd, "bell.log.old")
+        _log = os.path.join(cd, "bell.log")
+        for p in (_log_old, _log):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("log")
+        core.cleanup_runtime(root=cd)
+        check("退出扫尾:__pycache__(含子目录)和 bell.log.old 删掉",
+              not os.path.exists(_pc) and not os.path.exists(_pt)
+              and not os.path.exists(_pu) and not os.path.exists(_log_old))
+        check("退出扫尾:当次 bell.log 保留(排查故障要靠它)",
+              os.path.isfile(_log))
+        core.cleanup_runtime(root=cd)      # 再来一遍:没有这些东西也不许报错
+        check("退出扫尾:重复调用/东西不存在时安静无事",
+              os.path.isfile(_log))
+
+    # OCR 报错可读:ORT 状态串是 GBK 时(中文 Windows 底层消息)按 UTF-8 解码
+    # 会崩、真原因被糊成字节码 —— 带原始字节的 UnicodeDecodeError 要能翻回中文
+    # (2026-10-31 用户机器:DirectML 起不来,日志里只看得到 0xb6 这种字节)。
+    check("OCR 报错可读:GBK 状态串能翻出原文",
+          core._err_text(UnicodeDecodeError(
+              "utf-8", "读取失败".encode("gbk"), 0, 1, "invalid start byte"
+          )) == "读取失败"
+          and core._err_text(ValueError("普通异常")) == "普通异常")
+
+    # 单实例互斥体:同进程第二次创建必判"已运行"(第一把可能被正在跑的
+    # 真应用占着,所以只验第二次;互斥体进程退出自动释放,不用清)
+    core.single_instance()
+    check("单实例:同进程第二次创建互斥体必判已运行",
+          core.single_instance() is False)
+
+    # 支持档文案:日志与弹框共用一份(supported_res_text),别再手写死数字
+    check("分辨率文案:supported_res_text 与支持的两档一致",
+          tools_bell.supported_res_text() == "640×480 / 800×600"
+          and all(tools_bell.supported_size(r)
+                  for r in ((815, 680), (1011, 826)))
+          and not tools_bell.supported_size((1024, 768)))
+
 
 # ---------------------------------------- 5.5 降妖伏魔的窗口层(小窗/抽屉)
 
@@ -3094,9 +3159,9 @@ def sec_bell_ui():
                 ui_bell._menu_click(app, _types.SimpleNamespace(
                     y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
                 _warn_txt = " ".join(str(v) for v in warns)
-                check("定位:不支持的分辨率 -> 选完弹框提醒改成 640x480 / 800x600",
-                      len(warns) == 1 and "640x480" in _warn_txt
-                      and "800x600" in _warn_txt and "1291x1025" in _warn_txt,
+                check("定位:不支持的分辨率 -> 选完弹框提醒改成 640×480 / 800×600",
+                      len(warns) == 1 and "640×480" in _warn_txt
+                      and "800×600" in _warn_txt and "1291x1025" in _warn_txt,
                       _warn_txt or "没弹提醒")
                 app.on_locate_clients()
                 ui_bell._menu_click(app, _types.SimpleNamespace(

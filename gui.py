@@ -342,9 +342,9 @@ class App:
             parent = self.root
         mb.showwarning(
             "分辨率不支持",
-            "降妖伏魔只支持 640x480 和 800x600 两种客户端分辨率。\n\n"
+            f"降妖伏魔只支持 {tools_bell.supported_res_text()} 两种客户端分辨率。\n\n"
             f"当前客户端窗口是 {size}。请在游戏设置里把分辨率改成 "
-            "640x480 或 800x600，再点小窗右下角的 ↻。",
+            f"{tools_bell.supported_res_text()}，再点小窗右下角的 ↻。",
             parent=parent)
 
     # ---- 地图采集(窗口在 ui/bell,流程方法在这一层:入口层才同时够得着 tools 和 ui)。
@@ -618,6 +618,7 @@ class App:
         except Exception:
             pass
         self.root.destroy()
+        core.cleanup_runtime()            # 扫尾:__pycache__/旧日志,下次自己长回来
 
     def run(self):
         self.root.mainloop()

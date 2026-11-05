@@ -13,7 +13,14 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 .venv/Scripts/pythonw.exe main.py        # 启动
 .venv/Scripts/python.exe tests.py --quiet # 回归:约 12 秒,全绿再收工(条数以跑出来的为准)
 .venv/Scripts/python.exe check_shots.py   # 真机截图离线校验(docs/shots,10 张,约 7 秒)
+"$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe" tools/inno/installer.iss  # 安装包:先跑 package.py,产物 dist/mhxy_bell.exe
 ```
+
+- 发给别人用 = `dist/mhxy_bell.exe`(Inno Setup 打的安装包,每用户安装到
+  `%LocalAppData%\降妖伏魔`,不弹 UAC;装完桌面/开始菜单有图标,卸载删干净)。
+  脚本 `tools/inno/installer.iss` 只打包 exe + `_internal`,本机运行数据
+  (config/bell.log/data)不进去,首启自动生成。exe 未签名,对方首次运行会过
+  SmartScreen 那道"更多信息 → 仍要运行"
 
 - Bash 工具走 Git Bash,Windows 原生命令的参数要写双斜杠(`taskkill //F //PID`)
 - 日志:`bell.log`,格式 `YYYY-MM-DD HH:MM:SS [模块]内容`
@@ -53,6 +60,11 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
   **按下金字**(点击感),悬停不换背景。列表/抽屉里的普通按钮仍是圆角矩形
 - **失败提示就地写,不弹框**:框里没找到客户端时 `ui_bell.flash_foot()` 写 1.6 秒
   红字「没找到客户端」再还原(2026-10-21 用户定的:模态框会打断游戏)
+- **工具只许开一个**(2026-11-05 用户定的,实现抄 keju):`main.py` 用命名互斥体
+  (`core.single_instance`,`Global\MHXY_BELL_TOOL_MUTEX`)拦第二实例,弹框退场;
+  `--layout` 命令行模式不拦,方便并用。分辨率不支持的弹框提醒已有三条路径
+  (定位/换选客户端/扫描轮询),档位文案统一走
+  `tools_bell.supported_res_text()`,别再手写死「640x480 / 800x600」
 - **多开选客户端 = 药丸头上浮出来的面板(方案 E)**,不弹独立窗口、**不改变窗口
   尺寸**(2026-10-22 用户定的):`ui/bell.py:show_client_menu` / `close_client_menu`,
   面板和药丸**同宽**、悬在药丸上方盖住地图下缘;点行 = `app.on_pick_client(i)`;
@@ -122,6 +134,11 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 - `self._stop = threading.Event()` 会覆盖线程私有方法,已改名 `_halt`
 - 重构成败靠测试和探针,别只看代码"读起来对";写一次性探针,跑完删
 - 打包版 `sys.executable` 是应用自己,要跑子任务就进程内做
+- **扫描/OCR 要给游戏让路**(2026-10-31 用户反馈"游戏被拖卡"):进程按
+  「低于标准」优先级跑(`main.py:_low_priority`,别改回普通);GPU 识别偏慢
+  只记日志提示手动关 `use_gpu`,**不自动降档 CPU**(同机满载实测 CPU 识别
+  3~6s / GPU 0.7s,降档=把识别弄残);减负靠砍白读(非铃铛面板重读间隔
+  `DIALOG_OTHER_GAP` 已从 0.6 放宽到 1.2)
 
 ## 铃铛识别口径
 

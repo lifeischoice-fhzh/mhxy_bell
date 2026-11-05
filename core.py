@@ -40,6 +40,26 @@ DEFAULT_CONFIG = {
 
 MIN_INTERVAL, MAX_INTERVAL = 0.4, 10.0   # 轮询间隔的合法区间(tools/bell.py 取上限)
 
+OCR_GPU_SLOW_MS = 800    # GPU 单次识别中位超过这个数 -> 日志提示可关 GPU(不自动降档)
+OCR_SLOW_SAMPLES = 5     # 偏慢判断要攒够的连续真实识别次数
+
+
+def _err_text(err) -> str:
+    """把异常翻成可读文字。
+
+    ORT 的状态串偶尔是 GBK(中文 Windows 的底层错误消息),Python 按 UTF-8
+    解码会抛 UnicodeDecodeError、把真实原因糊掉 —— 2026-10-31 用户机器上
+    DirectML 起不来,日志里只看得到一串字节码。UnicodeDecodeError 自己带着
+    原始字节(`.object`),按 GBK 再解一次就能看到真话。
+    """
+    raw = getattr(err, "object", None)
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            return raw.decode("gbk", errors="replace")
+        except Exception:
+            pass
+    return str(err)
+
 REQUIRED_MODULES = ["numpy", "mss", "rapidocr_onnxruntime", "PIL"]
 
 
@@ -114,6 +134,42 @@ def set_app_id(app_id="MHXY.Bell"):
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
+        pass
+
+
+def single_instance(name="Global\\MHXY_BELL_TOOL_MUTEX"):
+    """工具只许开一个:已有实例在跑时返回 False(弹框退路在 main)。
+
+    命名互斥体由系统在进程退出时自动释放,这里刻意不 CloseHandle ——
+    句柄得活满整个进程生命周期,提前关等于没锁。WinDLL(use_last_error
+    =True)拿到的才是 CreateMutexW 自己的错误码(183=ERROR_ALREADY_EXISTS)。
+    源码版和打包版共用同一把锁,谁先开谁算数(2026-11-05 用户定的
+    "只允许开一个工具";实现抄 keju-answerer 的同名函数)。
+    """
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW(None, False, name)
+    return ctypes.get_last_error() != 183    # 183 = ERROR_ALREADY_EXISTS
+
+
+def cleanup_runtime(root=BASE_DIR):
+    """退出时的扫尾:删掉运行期间攒出来的、下次会自己长回来的东西。
+
+    - `__pycache__/`(源码运行的字节码缓存;打包版根本没有这东西)
+    - `bell.log.old`(上一次轮转留下的旧日志 —— 2026-10-31 用户定的
+      "每次关闭清理不需要的东西"。**当次的 bell.log 留着**:排除故障靠它
+      ("把日志发回来");大小由启动时那道"非当天/超 2MB 轮转"兜底)
+
+    全部尽力而为:删不掉(文件被占用/没权限)就当没这回事,不影响退出。
+    `root` 参数给测试用,生产路径一律默认程序目录。
+    """
+    import shutil
+    for d in ("__pycache__", os.path.join("tools", "__pycache__"),
+              os.path.join("ui", "__pycache__")):
+        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+    try:
+        os.remove(os.path.join(root, "bell.log.old"))
+    except OSError:
         pass
 
 
@@ -303,6 +359,8 @@ class Ocr:
         self.device = "CPU"
         self.ok = True                 # warmup 那次真实推理成功过吗(False=假就绪)
         self.err = ""                  # 不健康的原因(引擎/看门狗据此重建与报错)
+        self._lats = []                # 最近几次真实识别的耗时(ms),慢速诊断用
+        self._slow_noted = False       # "GPU 偏慢"提示只说一次
 
     def warmup(self, timeout: float = WARMUP_TIMEOUT):
         """预热:建好引擎 + 真跑一次推理,结果记在 ok 上。
@@ -346,7 +404,7 @@ class Ocr:
         try:
             self._infer(dummy)
         except Exception as err:
-            self._log(f"[OCR]推理初始化失败({err}),设备可能不可用")
+            self._log(f"[OCR]推理初始化失败({_err_text(err)}),设备可能不可用")
             if str(self.device).startswith("GPU"):
                 self._fallback_to_cpu(err)     # 既有机制:GPU 出问题就重建为 CPU
             try:
@@ -416,17 +474,43 @@ class Ocr:
         重建也进锁:引擎的创建一律发生在 self._lock 里(_get 同理)。锁里先
         复查一次设备 —— 两条线程同时识别失败时,后进锁的那条发现已经回退过
         就直接回去,不会把先建好的那份 CPU 引擎再建一遍(白占一份模型内存)。
+
+        注意这条只接**报错**(引擎崩/驱动问题),不接"慢":2026-10-31 实测
+        游戏同机满载时 CPU 识别要 3~6 秒(GPU 0.7 秒),因慢降档等于把识别
+        弄残。慢的对策是减读次,不是换设备。
         """
         try:
             from rapidocr_onnxruntime import RapidOCR
             with self._lock:
                 if not str(self.device).startswith("GPU"):
                     return
-                self._log(f"[OCR]GPU 识别异常({err}),自动回退 CPU")
+                self._log(f"[OCR]GPU 识别异常({_err_text(err)}),自动回退 CPU")
                 self._engine = RapidOCR()
                 self.device = "CPU(已回退)"
         except Exception as e:
             self._log(f"[OCR]CPU 引擎重建失败: {e}")
+
+    def _note_latency(self, ms):
+        """记一次真实识别的耗时;GPU 持续偏慢时**说一次**去哪关 GPU 加速。
+
+        只统计真实调用(预热不计),只记日志不自动降档 —— 2026-10-31 实测
+        弱机/满载下 CPU 识别 3~6 秒,自动降档会把读坐标拖到不可用;真正要
+        让路得靠用户自己权衡(改 config.json 的 use_gpu)。
+        """
+        self._lats.append(float(ms))
+        if len(self._lats) > OCR_SLOW_SAMPLES * 2:
+            del self._lats[:-OCR_SLOW_SAMPLES * 2]
+        if (not str(self.device).startswith("GPU")
+                or len(self._lats) < OCR_SLOW_SAMPLES
+                or self._slow_noted):
+            return
+        recent = sorted(self._lats[-OCR_SLOW_SAMPLES:])
+        mid = recent[len(recent) // 2]
+        if mid >= OCR_GPU_SLOW_MS:
+            self._slow_noted = True
+            self._log(f"[OCR]GPU 识别偏慢(近 {OCR_SLOW_SAMPLES} 次中位 "
+                      f"{mid:.0f}ms ≥ {OCR_GPU_SLOW_MS}ms,疑似显卡吃紧)—— "
+                      "游戏若觉得卡,可在 config.json 里把 use_gpu 改成 false")
 
     def recognize_blocks(self, img_bgr, limit_side=None, limit_type=None):
         """返回带坐标的文本块列表,按 (y, x) 排序。
@@ -440,6 +524,7 @@ class Ocr:
         字本来就大的那块(对话框条带)传 max + 足够大的 limit_side,就是按
         原像素跑 det —— 实测比放大到 480 快四成,读出来的东西一样。
         """
+        t0 = time.perf_counter()
         try:
             result = self._infer(img_bgr, limit_side, limit_type)
         except Exception as e:
@@ -448,6 +533,7 @@ class Ocr:
                 result = self._infer(img_bgr, limit_side, limit_type)   # CPU 重试一次
             else:
                 raise
+        self._note_latency((time.perf_counter() - t0) * 1000)
         if not result:
             return []
 
