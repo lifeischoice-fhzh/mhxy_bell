@@ -206,6 +206,7 @@ class App:
             self._refresh_bell_locate(rect)
             self.log(f"[铃铛]发现 {n_wins} 个客户端,已按整个客户端定位")
             self._warn_bell_size_rect(rect)
+            self._hint_min_res(rect)
         else:
             self._refresh_bell_locate(None)
             self.log("[铃铛]没找到客户端窗口:先启动游戏再进降妖伏魔")
@@ -304,6 +305,7 @@ class App:
             self.log(f"[铃铛]已定位客户端 ({rect[0]},{rect[1]})"
                      f"-({rect[2]},{rect[3]})")
         self._warn_bell_size_rect(rect)
+        self._hint_min_res(rect)
 
     def _bell_client_rect(self):
         """选定的那台客户端现在在哪(按标题/角色名匹配);找不到返回 None。"""
@@ -346,6 +348,36 @@ class App:
             f"当前客户端窗口是 {size}。请在游戏设置里把分辨率改成 "
             f"{tools_bell.supported_res_text()}，再点小窗右下角的 ↻。",
             parent=parent)
+
+    def _hint_min_res(self, rect):
+        """定位到 800×600 档(支持、但非最小):跟 keju 一样提一句。
+
+        这档识别完全能用,最小档截图更快、字更大 —— 是**建议**不是警告。
+        同一尺寸整个会话只提一次;文案与 keju 一致,不额外发挥。
+        """
+        if not rect:
+            return
+        w = int(rect[2]) - int(rect[0])
+        h = int(rect[3]) - int(rect[1])
+        if (not tools_bell.supported_size((w, h))
+                or tools_bell.res_tier_index((w, h)) == 0):
+            return
+        size = f"{w}x{h}"
+        if size == getattr(self, "_bell_res_hinted", ""):
+            return
+        self._bell_res_hinted = size
+        best = tools_bell.min_res_text()
+        self.log(f"[提示]不是最小分辨率 —— 游戏分辨率调成 {best} 效果最佳"
+                 "(截图更快、字也清楚)")
+        import tkinter.messagebox as mb
+        parent = getattr(self, "bell_win", None)
+        try:
+            if parent is None or not parent.winfo_exists():
+                parent = self.root
+        except Exception:
+            parent = self.root
+        mb.showinfo("分辨率建议", f"建议使用最小分辨率 {best},效果更佳",
+                    parent=parent)
 
     # ---- 地图采集(窗口在 ui/bell,流程方法在这一层:入口层才同时够得着 tools 和 ui)。
     # **界面入口已撤**(用户定的 2026-10-20,底图内置),但功能只是从界面移除:

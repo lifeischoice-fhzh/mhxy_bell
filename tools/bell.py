@@ -1200,6 +1200,36 @@ def supported_res_text():
     return " / ".join(f"{w}×{h}" for w, h in SUPPORTED_GAME_RES)
 
 
+def min_res_text():
+    """最小支持档文案(640×480):这档截图最快、字最大,提示用户优先用。"""
+    w, h = SUPPORTED_GAME_RES[0]
+    return f"{w}×{h}"
+
+
+def res_tier_index(size):
+    """窗口尺寸按面积就近归到表里哪一档 -> 下标(0=最小档 640×480)。
+
+    只给"建议调最小档"的提示用(抄 keju 的就近归档口径);定位/识别仍走
+    `supported_size` / `layout_for` 的 ±20 容差表,两套口径别混。表里没有的
+    尺寸(不支持)返回 None。
+    """
+    if not supported_size(size):
+        return None
+    w, h = size
+    best_i = best_d = None
+    i = 0
+    for key in load_layouts():          # 键序里混着"_说明"这种非档位键,跳过不计数
+        try:
+            kw, kh = (int(v) for v in str(key).lower().split("x"))
+        except ValueError:
+            continue
+        d = abs(kw * kh - w * h)
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+        i += 1
+    return best_i
+
+
 def layout_for(size):
     """这个客户端尺寸的**对话框框**(相对窗口左上角)或 None。"""
     return (layout_row(size) or {}).get("dlg") or None

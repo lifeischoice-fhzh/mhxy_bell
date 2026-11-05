@@ -1,14 +1,19 @@
 ; 降妖伏魔 安装包脚本(Inno Setup 6)
 ; 打包 dist/降妖伏魔 里的绿色版(只取 exe + _internal,不带本机运行数据),
-; 产物: dist/降妖伏魔安装包.exe —— 对方双击装完即可用,无需管理员权限。
+; 产物: dist/mhxy_bell.exe —— 对方双击装完即可用,无需管理员权限。
 ;
-; 编译: ISCC tools/inno/installer.iss   (需先跑 package.py 生成绿色版)
+; 编译: package.py 一条龙自动调用(版本号经 /DAPP_VERSION 传入);
+;       手动编译不传版本时按下面的缺省 1.0.0。
+
+#ifndef APP_VERSION
+  #define APP_VERSION "1.0.0"
+#endif
 
 [Setup]
 AppId={{8F5E6C2A-9B1D-4E7A-9C3F-2A7D51B0E4D8}
 AppName=降妖伏魔
-AppVersion=1.0.0
-AppVerName=降妖伏魔 1.0.0
+AppVersion={#APP_VERSION}
+AppVerName=降妖伏魔 {#APP_VERSION}
 ; 每用户安装:不弹 UAC,装在 %LocalAppData%\降妖伏魔(程序要往自己目录写
 ; config/data,Program Files 会没权限)
 PrivilegesRequired=lowest

@@ -9,18 +9,25 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 ## 环境
 
 ```bash
-# Python 用项目 venv(建法见 README)
+# Python 用项目 venv(建法见 README;一条命令 `tools\setup_venv.bat` 会把
+# onnxruntime 修成 DirectML 版并验证,requirements.txt 顶部的双发行版坑)
 .venv/Scripts/pythonw.exe main.py        # 启动
 .venv/Scripts/python.exe tests.py --quiet # 回归:约 12 秒,全绿再收工(条数以跑出来的为准)
 .venv/Scripts/python.exe check_shots.py   # 真机截图离线校验(docs/shots,10 张,约 7 秒)
-"$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe" tools/inno/installer.iss  # 安装包:先跑 package.py,产物 dist/mhxy_bell.exe
+.venv/Scripts/python.exe package.py       # 绿版+安装包一条龙;版本 --version 指定,否则最右位自动+1
 ```
 
 - 发给别人用 = `dist/mhxy_bell.exe`(Inno Setup 打的安装包,每用户安装到
   `%LocalAppData%\降妖伏魔`,不弹 UAC;装完桌面/开始菜单有图标,卸载删干净)。
   脚本 `tools/inno/installer.iss` 只打包 exe + `_internal`,本机运行数据
   (config/bell.log/data)不进去,首启自动生成。exe 未签名,对方首次运行会过
-  SmartScreen 那道"更多信息 → 仍要运行"
+  SmartScreen 那道"更多信息 → 仍要运行"。版本号:`package.py` 不带参数每次
+  打包自动把最右一位 +1(记录在 `tools/inno/version.txt`,随仓库提交);
+  要定版本用 `--version 1.2.0`,只更新绿色版时 ISCC 缺席会自动跳过安装包。
+  spec 对 onnxruntime **不要用 collect_all**(2026-11-05 瘦身):那会把
+  quantization/transformers/tools 几百个离线工具 .py 拖进包;运行时只要
+  capi 的 dll/pyd(spec 里 `collect_dynamic_libs('onnxruntime')`),改完
+  spec 必须真机验证 —— 起打包版看日志里 `GPU(DirectML)` 是否就绪
 
 - Bash 工具走 Git Bash,Windows 原生命令的参数要写双斜杠(`taskkill //F //PID`)
 - 日志:`bell.log`,格式 `YYYY-MM-DD HH:MM:SS [模块]内容`
@@ -38,7 +45,8 @@ Windows 桌面工具(Python 3.12 + Tk + RapidOCR/DirectML),从 `E:/Project/keju-
 
 ## 界面约定(单窗应用,动界面前先读)
 
-- **启动直达小窗,× 即退出**;没有主页/工具箱,`show_bell()` 就是整个入口
+- **启动直达小窗,× 即退出**;没有主页/工具箱,`show_bell()` 就是整个入口;
+  小窗**不置顶**(2026-11-05 用户定的:置顶会一直盖住游戏画面,别加回去)
   (快部分建窗,慢活 `_enter_bell_slow` 排在动画起跑之后)
 - **小窗上只有四类字**:地名、坐标、角色名(**包在左下角一个圆角药丸里,无三角**),
   右下角一颗无文字的 **☀/☾** 切深色/明亮(2026-10-21 用户选定的深色 HUD A +

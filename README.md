@@ -1,6 +1,6 @@
 # 降妖伏魔 —— 梦幻西游找点小助手
 
-从 [keju-answerer](../keju-answerer) 项目里抽出来的**独立应用**,只做一件事:
+从 [mhxy_keju](../mhxy_keju)(原 keju-answerer)项目里抽出来的**独立应用**,只做一件事:
 
 读任务提示里的"地图名+坐标" → **地图上画红点**(不播语音,要的就是安静)。
 
@@ -10,7 +10,11 @@
 ## 环境与启动
 
 ```bash
-# 装依赖(Python 3.12;onnxruntime 两种发行版的注意事项见 requirements.txt 顶部)
+# 一条命令建环境(Python 3.12):建 .venv、装钉死版本的依赖、把 onnxruntime
+# 修成 DirectML 版并验证(两种发行版谁后装谁覆盖,详见 requirements.txt 顶部)
+tools\setup_venv.bat
+
+# 或手动(顺序别乱,最后一步不能省):
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 .venv/Scripts/python.exe -m pip install --force-reinstall --no-deps onnxruntime-directml==1.24.4
@@ -26,8 +30,8 @@ python check_shots.py        # 真机截图离线校验(docs/shots/ 里六种怪
 
 ## 用法
 
-- 启动**直接进小窗**(唯一窗口,置顶):自动定位客户端、按坐标范围标定,
-  **监听常开**(没有开关)—— 认到妖魔只在小窗标一个红圆点 + 写日志
+- 启动**直接进小窗**(唯一窗口,**不置顶**,盖到游戏就拖到旁边):自动定位客户端、
+  按坐标范围标定,**监听常开**(没有开关)—— 认到妖魔只在小窗标一个红圆点 + 写日志
 - 六张地图的底图**已内置**(长寿村/傲来国/朱紫国/建邺城/西梁女国/宝象国),
   界面没有采集入口;采集的代码完整保留(抽屉控件与回调都在,只是没有按钮),
   后续看情况开放
@@ -65,10 +69,12 @@ python check_shots.py        # 真机截图离线校验(docs/shots/ 里六种怪
 
 ```bash
 .venv/Scripts/python.exe -m pip install pyinstaller
-package.bat          # 或 python package.py --dry-run 先看一眼
+package.bat          # 绿版 + 安装包 dist/mhxy_bell.exe 一条龙
 ```
 
-产出 `dist/降妖伏魔/降妖伏魔.exe`;配置、日志、自己录的底图会在重打包时保留。
+产出两样:`dist/降妖伏魔/`(绿色版,重打包时保留配置/日志/底图)和
+`dist/mhxy_bell.exe`(安装包)。安装包版本号在 `tools/inno/version.txt`,
+每次打包自动把最右一位 +1;要定版本用 `package.py --version 1.2.0`。
 
 ## 文档
 

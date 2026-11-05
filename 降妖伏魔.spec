@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 datas = [('data/bell_layouts.json', 'data'),
          ('data/bell.ico', 'data'),
@@ -8,8 +8,12 @@ binaries = []
 hiddenimports = ['PIL', 'mss']
 tmp_ret = collect_all('rapidocr_onnxruntime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('onnxruntime')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# onnxruntime **不要** collect_all(2026-11-05 瘦身):那会把 quantization/
+# transformers/tools/datasets 里几百个离线工具 .py 全拖进包(安装包 94MB 的
+# 大头之一)。识别运行时只碰 capi 的 dll/pyd + 顶层几个 .py —— 二进制这里
+# 显式收一份(官方 contrib 钩子本来也会收,写明意图),纯 .py 由 import
+# 分析自动跟进;rapidocr 的模型/配置走上面那条 collect_all。
+binaries += collect_dynamic_libs('onnxruntime')
 
 
 a = Analysis(

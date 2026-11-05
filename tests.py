@@ -2609,6 +2609,22 @@ def sec_bell():
                   for r in ((815, 680), (1011, 826)))
           and not tools_bell.supported_size((1024, 768)))
 
+    # 就近归档:给"建议调最小档"的提示用(识别仍走 ±20 容差表,两套口径别混)
+    check("分辨率归档:窗口按面积就近归档,不支持返回 None",
+          tools_bell.res_tier_index((815, 680)) == 0
+          and tools_bell.res_tier_index((812, 663)) == 0
+          and tools_bell.res_tier_index((1011, 826)) == 1
+          and tools_bell.res_tier_index((1024, 768)) is None
+          and tools_bell.min_res_text() == "640×480")
+
+    # 安装包版本:没指定时最右位 +1(用户定的每次打包 +1;--version 则原样用)
+    import package
+    import re as _re_pkg
+    check("安装包版本:最右位 +1;version.txt 是纯数字段",
+          package.bump_version("1.0.0") == "1.0.1"
+          and package.bump_version("2.3") == "2.4"
+          and bool(_re_pkg.fullmatch(r"\d+(\.\d+)*", package.read_version())))
+
 
 # ---------------------------------------- 5.5 降妖伏魔的窗口层(小窗/抽屉)
 

@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
-"""一键打包:重建 dist/降妖伏魔,并把用户运行时数据补回去。
+"""一键打包:重建 dist/降妖伏魔 + 生成安装包 dist/mhxy_bell.exe。
 
 用法:
-    package.bat                # 双击或命令行(推荐)
+    package.bat                          # 双击或命令行(推荐):绿版+安装包一条龙
     .venv/Scripts/python.exe package.py --dry-run
+    .venv/Scripts/python.exe package.py --version 1.2.0   # 指定安装包版本号
 
 PyInstaller 会整个重建 dist/降妖伏魔;配置、日志和自己录的地图底图都在
-那个目录里。脚本打包前把它们抄到临时目录,打完再放回去。
+那个目录里。脚本打包前把它们抄到临时目录,打完再放回去。绿版成功后接着
+调 Inno Setup 打安装包(没装 Inno Setup 就只更新绿色版)。
+
+安装包版本号:--version 指定则原样用;不给就自动把最右一位 +1
+(记录在 tools/inno/version.txt,打进安装包向导;只在安装包真编出来后才写)。
 """
 import argparse
 import locale
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +30,9 @@ APP_NAME = "降妖伏魔"
 SPEC = ROOT / f"{APP_NAME}.spec"
 DIST = ROOT / "dist" / APP_NAME
 EXE = DIST / f"{APP_NAME}.exe"
+ISS = ROOT / "tools" / "inno" / "installer.iss"
+SETUP = ROOT / "dist" / "mhxy_bell.exe"            # 安装包产物
+VERSION_FILE = ROOT / "tools" / "inno" / "version.txt"   # 安装包版本记录
 
 # 运行时产物(每台机器/每次使用都不一样,打包不能丢)
 KEEP_FILES = ("config.json",)
@@ -119,15 +128,57 @@ def pyinstaller_ready():
         return False
 
 
+def read_version():
+    """version.txt 里的安装包版本;文件没有/坏了按 1.0.0 起步。"""
+    try:
+        v = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "1.0.0"
+    return v if re.fullmatch(r"\d+(\.\d+)*", v) else "1.0.0"
+
+
+def write_version(v):
+    VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    VERSION_FILE.write_text(v + "\n", encoding="utf-8")
+
+
+def bump_version(v):
+    """「1.0.0」->「1.0.1」:最右一位 +1(用户定的:没指定版本每次打包 +1)。"""
+    parts = [int(p) for p in v.split(".")]
+    parts[-1] += 1
+    return ".".join(str(p) for p in parts)
+
+
+def find_iscc():
+    """找 Inno Setup 编译器:常见安装位置 + PATH;找不到返回 None。"""
+    env = os.environ
+    candidates = (
+        Path(env.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        Path(env.get("ProgramFiles(x86)", "")) / "Inno Setup 6" / "ISCC.exe",
+        Path(env.get("ProgramFiles", "")) / "Inno Setup 6" / "ISCC.exe",
+    )
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+    return shutil.which("ISCC")
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="一键打包降妖伏魔")
+    ap = argparse.ArgumentParser(description="一键打包降妖伏魔(绿版+安装包)")
     ap.add_argument("--dry-run", action="store_true",
                     help="只打印要保留的文件和打包命令,不真的打包")
+    ap.add_argument("--version", metavar="X.Y.Z",
+                    help="安装包版本号;不给就自动把最右一位 +1"
+                         "(记录在 tools/inno/version.txt)")
     ap.add_argument("--no-clean", action="store_true",
                     help="保留 PyInstaller 缓存(更快,但依赖变动后可能打进旧东西)")
     ap.add_argument("--no-backup", action="store_true",
                     help="不保留 dist 里的运行时数据(配置/日志/地图底图等)")
     args = ap.parse_args(argv)
+
+    if args.version and not re.fullmatch(r"\d+(\.\d+)*", args.version):
+        say(f"版本号格式不对: {args.version} —— 应为 1.2.3 这种纯数字段")
+        return 2
 
     if not SPEC.is_file():
         say(f"找不到打包配置: {SPEC}")
@@ -156,6 +207,12 @@ def main(argv=None):
     if args.dry_run:
         say("dry-run:不执行打包")
         say("将执行: " + " ".join(cmd))
+        iscc = find_iscc()
+        if iscc is None:
+            say("没找到 ISCC,只会更新绿色版")
+        else:
+            ver = args.version or bump_version(read_version())
+            say(f"将执行: \"{iscc}\" /DAPP_VERSION={ver} \"{ISS}\"")
         return 0
 
     stop_running()
@@ -184,6 +241,21 @@ def main(argv=None):
         size = EXE.stat().st_size / 1024 / 1024
         say(f"完成: {EXE}")
         say(f"  {size:.1f} MB,耗时 {time.time() - t0:.0f}s")
+        # ---- 安装包:绿版成功才打;版本 --version 给定原样用,否则最右位 +1 ----
+        # (version.txt 只在安装包真编出来后才写,失败/跳过不占号)
+        iscc = find_iscc()
+        if iscc is None:
+            say("没找到 Inno Setup(ISCC.exe)—— 跳过安装包,只更新了绿色版")
+        else:
+            ver = args.version or bump_version(read_version())
+            say(f"安装包版本: {ver}")
+            rc2 = subprocess.call([iscc, f"/DAPP_VERSION={ver}", str(ISS)])
+            if rc2 != 0 or not SETUP.is_file():
+                say(f"安装包编译失败(ISCC exit {rc2})")
+                return rc2 or 4
+            write_version(ver)
+            mb = SETUP.stat().st_size / 1024 / 1024
+            say(f"安装包: {SETUP}({mb:.1f} MB)")
         ok = True
         return 0
     finally:

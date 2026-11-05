@@ -255,7 +255,8 @@ def build_bell(app):
     app.bell_win = tk.Toplevel(app.root)
     app.bell_win.title("降妖伏魔 · 妖魔位置")
     app.bell_win.configure(bg=BG)
-    app.bell_win.attributes("-topmost", True)
+    # **不置顶**(2026-11-05 用户定的:置顶会一直盖住游戏画面)—— 要看得清
+    # 就把小窗摆在游戏窗口旁边,别靠压在游戏上;点游戏它照常到后面去
     app.bell_win.resizable(False, False)
     # 标题栏 + 任务栏(最小化时)用同一把图标:金铃铛 + 红点(data/bell.ico)。
     # **别在这里调 `iconbitmap`**:它走 LoadImage(LR_DEFAULTSIZE)=32px 那一档,
