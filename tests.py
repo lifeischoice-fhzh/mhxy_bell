@@ -3175,9 +3175,10 @@ def sec_bell_ui():
                 ui_bell._menu_click(app, _types.SimpleNamespace(
                     y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
                 _warn_txt = " ".join(str(v) for v in warns)
-                check("定位:不支持的分辨率 -> 选完弹框提醒改成 640×480 / 800×600",
+                check("定位:不支持的分辨率 -> 选完弹框只报支持的两档",
                       len(warns) == 1 and "640×480" in _warn_txt
-                      and "800×600" in _warn_txt and "1291x1025" in _warn_txt,
+                      and "800×600" in _warn_txt
+                      and "1291x1025" not in _warn_txt,
                       _warn_txt or "没弹提醒")
                 app.on_locate_clients()
                 ui_bell._menu_click(app, _types.SimpleNamespace(

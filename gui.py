@@ -344,9 +344,7 @@ class App:
             parent = self.root
         mb.showwarning(
             "分辨率不支持",
-            f"降妖伏魔只支持 {tools_bell.supported_res_text()} 两种客户端分辨率。\n\n"
-            f"当前客户端窗口是 {size}。请在游戏设置里把分辨率改成 "
-            f"{tools_bell.supported_res_text()}，再点小窗右下角的 ↻。",
+            f"降妖伏魔只支持 {tools_bell.supported_res_text()} 两种客户端分辨率。",
             parent=parent)
 
     def _hint_min_res(self, rect):
