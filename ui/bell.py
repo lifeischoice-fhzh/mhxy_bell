@@ -39,7 +39,6 @@ ROW_H = 24                           # 展开后每行名字的高度
 MENU_MAX_ROWS = 6                    # 展开最多列几台
 MENU_GAP = 4                         # 面板和框之间的缝
 MENU_PAD_V = 5                       # 面板上下留白
-CHIP_GAP = 7                         # (留用)名字和右侧元素的间距
 CHIP_W_FALLBACK = 156                # 取不到字体时的兜底宽
 DRAWER_W = 300                       # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
 DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
@@ -68,8 +67,6 @@ def chip_width(app):
         return w
     except Exception:
         return CHIP_W_FALLBACK
-DRAWER_W = 300                      # 右侧「地图采集」抽屉宽度(入口已撤,代码保留)
-DETAIL_W, DETAIL_H = DRAWER_W - 44, 210     # 抽屉详情页的地图预览区
 
 
 def set_coord(app, text):
@@ -128,15 +125,28 @@ def set_client(app, name):
     _draw_chip(app)
 
 
+def set_name_bad(app, bad):
+    """当前客户端的游戏分辨率不支持 -> 角色名本身变红(2026-11-12 用户定的:
+    不弹框、不换文案);改回支持档自动复原。状态没变不重画。"""
+    bad = bool(bad)
+    if getattr(app, "_bell_name_bad", False) == bad:
+        return
+    app._bell_name_bad = bad
+    _draw_chip(app)
+
+
 def _chip_parts(app):
     """底行框这一拍画什么:(色板, 文字, 字色)。
 
-    正在就地提示 -> 红字;按着不放 -> 金字(点击感);平时 -> 灰字。
+    正在就地提示 -> 红字;分辨率不支持 -> 角色名红字;按着不放 -> 金字
+    (点击感);平时 -> 灰字。
     """
     c = ui_widgets.bell_palette(getattr(app, "bell_mode", None))
     tip = getattr(app, "_bell_flash_text", "")
     text = tip or getattr(app, "bell_client_text", "") or CLIENT_NONE
     if tip:
+        fg = c["red"]
+    elif getattr(app, "_bell_name_bad", False):
         fg = c["red"]
     elif getattr(app, "_bell_chip_press", False):
         fg = c["gold"]
@@ -317,10 +327,15 @@ def build_bell(app):
     app._bell_flash_text = ""
     app._bell_menu_open = False
     # 按下变金;抬起:列表开着 -> 收起,没开 -> 重新定位一次并列出来
-    chip.bind("<Button-1>", lambda _e: _chip_press(app, True))
+    chip.bind("<Button-1>", lambda _e: (_chip_press(app, True),
+                                        app.on_client_hover_end()))
     chip.bind("<ButtonRelease-1>",
               lambda _e: (_chip_press(app, False), _chip_release(app)))
-    chip.bind("<Leave>", lambda _e: _chip_press(app, False))
+    # 悬停:药丸上方浮出当前游戏分辨率(2026-11-12 用户点名要的);
+    # 移开就收(按下也收,免得和展开的列表叠在一起)
+    chip.bind("<Enter>", lambda _e: app.on_client_hover_start())
+    chip.bind("<Leave>", lambda _e: (_chip_press(app, False),
+                                     app.on_client_hover_end()))
     set_client(app, "")
 
     # ---- 右侧抽屉(采集的界面入口已撤,控件照建:开抽屉走 `toggle_drawer`) ----
@@ -601,6 +616,7 @@ def apply_theme(app, mode=None):
     if win is None or not win.winfo_exists():
         return
     close_client_menu(app)     # 浮层颜色是开层时刷死的,切主题直接收掉
+    app.on_client_hover_end()  # 悬停小条的配色也刷死了,一并收掉
     win.configure(bg=c["bg"])
     for name in ("bell_body", "bell_head", "bell_foot", "bell_drawer"):
         f = getattr(app, name, None)

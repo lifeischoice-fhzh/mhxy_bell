@@ -51,8 +51,9 @@ def _low_priority():
 def main():
     ap = argparse.ArgumentParser(description="梦幻西游降妖伏魔助手")
     ap.add_argument("--layout", action="store_true",
-                    help="量当前客户端尺寸下对话框的位置,写进分辨率表"
-                         "(任务栏坐标不进表:它能被拖走)")
+                    help="量当前画布上对话框的位置,换算成占画比打印"
+                         "(直接可填 client_common.DLG_RATIOS;"
+                         "标注图存 docs/layout/)")
     args = ap.parse_args()
 
     if args.layout:

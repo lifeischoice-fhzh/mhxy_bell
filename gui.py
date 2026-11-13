@@ -195,18 +195,26 @@ class App:
             # 定位结果当场存下来(单台也存):底行显示角色名;多开且没选过时,
             # 主窗浮层里点一台(2026-10-22 起不再弹独立窗口,也不阻塞扫描)。
             choices = tools_bell.client_choices()
-            want = str(self._get("bell_client") or "")
-            if len(choices) <= 1:
-                if choices:
-                    self._set("bell_client", choices[0][1])
-            elif not want:
-                self._bell_pick_choices = list(choices)
-                ui_bell.show_client_menu(self, choices)
-            rect = self._bell_client_rect()
-            self._refresh_bell_locate(rect)
-            self.log(f"[铃铛]发现 {n_wins} 个客户端,已按整个客户端定位")
-            self._warn_bell_size_rect(rect)
-            self._hint_min_res(rect)
+            if not choices:
+                # 全是登录窗:与 keju 同判「登录角色才识别」—— 自动定位只落
+                # 日志,不弹框(一开应用就弹会打断游戏)
+                self._refresh_bell_locate(None)
+                self._hint_login(n_wins, manual=False)
+            else:
+                skipped = n_wins - len(choices)
+                if skipped:
+                    self.log(f"[铃铛]{skipped} 个登录窗口已跳过"
+                             "(登录角色后再来)")
+                want = str(self._get("bell_client") or "")
+                if len(choices) <= 1:
+                    if choices:
+                        self._set("bell_client", choices[0][1])
+                elif not want:
+                    self._bell_pick_choices = list(choices)
+                    ui_bell.show_client_menu(self, choices)
+                rect = self._bell_client_rect()
+                self._refresh_bell_locate(rect)
+                self.log(f"[铃铛]发现 {n_wins} 个客户端,已按整个客户端定位")
         else:
             self._refresh_bell_locate(None)
             self.log("[铃铛]没找到客户端窗口:先启动游戏再进降妖伏魔")
@@ -238,9 +246,13 @@ class App:
         ui_bell.draw_bell(self)
 
     def _bell_client_label(self):
-        """底行那句角色名:选定的客户端;没定位到就空着(界面不写"定位"字样)。"""
-        name = tools_bell.client_name(str(self._get("bell_client") or ""))
-        return name or ""
+        """底行那句角色名:选定的客户端;没定位到就空着(界面不写"定位"字样)。
+
+        `core.client_name` 是 keju 同源语义:登录窗标题(没有" - ")抠不出
+        名字返回空串 —— 显示侧自己回退整标题(选了登录窗就照实显示它)。
+        """
+        raw = str(self._get("bell_client") or "")
+        return core.client_name(raw) or raw
 
     def _refresh_bell_locate(self, rect=None):
         """把定位结果写到小窗底行:定位到哪台客户端就写角色名,没定位到写占位句。
@@ -277,9 +289,15 @@ class App:
             self.log("[铃铛]没找到客户端窗口")
             return
         choices = tools_bell.client_choices()
-        if not choices:                      # 有窗口但抠不出名字:按整窗定位
-            self._refresh_bell_locate([int(v) for _t, v in found[:1]])
+        if not choices:
+            # 全是登录窗(标题抠不出角色名):与 keju 同判「登录角色才识别」,
+            # 提示登录后再来 —— 别拿「分辨率不支持」误导人
+            self._refresh_bell_locate(None)
+            self._hint_login(len(found), manual=True)
             return
+        skipped = len(found) - len(choices)
+        if skipped:
+            self.log(f"[铃铛]{skipped} 个登录窗口已跳过(登录角色后再来)")
         # 浮层列出来,点哪台用哪台;选择记在 app 上,行回调取用
         self._bell_pick_choices = list(choices)
         ui_bell.show_client_menu(self, choices)
@@ -294,7 +312,7 @@ class App:
         self._apply_bell_client(title, name)
 
     def _apply_bell_client(self, title, name="", rect=None):
-        """选定客户端收尾:落盘、刷底行、日志、分辨率提醒(单台/浮层共这一条路)。"""
+        """选定客户端收尾:落盘、刷底行、日志(单台/浮层共这一条路)。"""
         self._set("bell_client", title)
         self._save_cfg()
         if name:
@@ -304,80 +322,106 @@ class App:
         if rect:
             self.log(f"[铃铛]已定位客户端 ({rect[0]},{rect[1]})"
                      f"-({rect[2]},{rect[3]})")
-        self._warn_bell_size_rect(rect)
-        self._hint_min_res(rect)
 
     def _bell_client_rect(self):
-        """选定的那台客户端现在在哪(按标题/角色名匹配);找不到返回 None。"""
+        """选定的那台客户端现在在哪(按标题/角色名匹配);找不到返回 None。
+
+        登录窗(标题抠不出角色名)一律不认 —— 与 `client_choices` 同一道闸。
+        """
         want = str(self._get("bell_client") or "")
         try:
             found, _mini = core.find_client_windows()
         except Exception:
             return None
         if len(found) == 1:
-            return [int(v) for v in found[0][1]]
+            title, box = found[0]
+            return [int(v) for v in box] if core.client_name(title) else None
         for title, box in found:
-            if title == want or tools_bell.client_name(title) == want:
+            if not core.client_name(title):
+                continue
+            if title == want or core.client_name(title) == want:
                 return [int(v) for v in box]
         return None
 
-    def _warn_bell_size_rect(self, rect):
-        """自动定位到的客户端尺寸不支持时提醒一次(只支持 640x480 / 800x600)。"""
-        if not rect:
-            return
-        w = int(rect[2]) - int(rect[0])
-        h = int(rect[3]) - int(rect[1])
-        if not tools_bell.supported_size((w, h)):
-            self._warn_bell_size(f"{w}x{h}")
+    def on_client_hover_start(self, _e=None):
+        """鼠标停在角色名药丸上:上方浮出**当前游戏分辨率**(照 keju 的做法)。
 
-    def _warn_bell_size(self, size):
-        """弹一次"改分辨率"的提醒:同一个尺寸只弹一次,别每拍都弹。"""
-        if not size or size == getattr(self, "_bell_size_warned", ""):
-            return
-        self._bell_size_warned = size
-        import tkinter.messagebox as mb
-        parent = getattr(self, "bell_win", None)
-        try:
-            if parent is None or not parent.winfo_exists():
-                parent = self.root
-        except Exception:
-            parent = self.root
-        mb.showwarning(
-            "分辨率不支持",
-            f"降妖伏魔只支持 {tools_bell.supported_res_text()} 两种客户端分辨率。",
-            parent=parent)
-
-    def _hint_min_res(self, rect):
-        """定位到 800×600 档(支持、但非最小):跟 keju 一样提一句。
-
-        这档识别完全能用,最小档截图更快、字更大 —— 是**建议**不是警告。
-        同一尺寸整个会话只提一次;文案与 keju 一致,不额外发挥。
+        分辨率不在支持档时直接显示红字「分辨率不支持」(2026-11-12 用户定
+        的)—— 别只报个数字让人自己去比对档位表。实时按角色名匹配画布
+        (窗口拖动/换分辨率都跟得上),匹配不上退回当前客户端矩形再查一次;
+        都没有就地写明,不弹框。这是全窗**唯一**的悬停文案(2026-10-22 用户
+        取消过按钮的 hover 提示;2026-11-12 点名要角色名上这条,别扩散)。
         """
-        if not rect:
-            return
-        w = int(rect[2]) - int(rect[0])
-        h = int(rect[3]) - int(rect[1])
-        if (not tools_bell.supported_size((w, h))
-                or tools_bell.res_tier_index((w, h)) == 0):
-            return
-        size = f"{w}x{h}"
-        if size == getattr(self, "_bell_res_hinted", ""):
-            return
-        self._bell_res_hinted = size
-        best = tools_bell.min_res_text()
-        self.log(f"[提示]不是最小分辨率 —— 游戏分辨率调成 {best} 效果最佳"
-                 "(截图更快、字也清楚)")
-        import tkinter.messagebox as mb
-        parent = getattr(self, "bell_win", None)
-        try:
-            if parent is None or not parent.winfo_exists():
-                parent = self.root
-        except Exception:
-            parent = self.root
-        mb.showinfo("分辨率建议", f"建议使用最小分辨率 {best},效果更佳",
-                    parent=parent)
+        c = ui_widgets.bell_palette(getattr(self, "bell_mode", None))
+        res = self._bell_client_res()
+        if res and not core.supported_res(res):
+            text, fg = "分辨率不支持", c["red"]
+        elif res:
+            text, fg = f"{res[0]}×{res[1]}", c["txt"]
+        else:
+            try:
+                has = bool(self.engine.bell_tool.ui_state().get("client"))
+            except Exception:
+                has = False
+            text = "未登录角色,没有游戏画面" if has else "未定位"
+            fg = c["txt"]
+        self.on_client_hover_end()
+        tip = ui_widgets.hover_tip(self.root, text, self.bell_client_chip,
+                                   font=(c["font"], 10), bg=c["btn"],
+                                   outline=c["btn_line"], fg=fg)
+        if tip is not None:
+            self._client_tip = tip
 
-    # ---- 地图采集(窗口在 ui/bell,流程方法在这一层:入口层才同时够得着 tools 和 ui)。
+    def on_client_hover_end(self, _e=None):
+        """收起悬停小条(文案换了也先收,宽度要重算)。"""
+        tip = getattr(self, "_client_tip", None)
+        if tip is not None:
+            try:
+                tip.destroy()
+            except Exception:
+                pass
+            self._client_tip = None
+
+    def _bell_client_res(self):
+        """当前接入的那台客户端的游戏分辨率(实时查,拿不到 None)。
+
+        先用工具记下的**角色名**去画布列表里配(和位置无关,拖动窗口不会过期);
+        名字还没跟上时退回工具给的窗口矩形。两者都是 common 的口径:
+        `find_client_canvases` / `canvas_res_of`。
+        """
+        try:
+            st = self.engine.bell_tool.ui_state()
+        except Exception:
+            st = {}
+        name = st.get("client_name") or ""
+        if name:
+            try:
+                canvases, _mini = core.find_client_canvases()
+            except Exception:
+                canvases = []
+            for title, res, _rect, _scale, _mode in canvases:
+                if core.client_name(title) == name:
+                    return (int(res[0]), int(res[1]))
+        rect = st.get("client_rect")
+        if rect:
+            found = tools_bell.canvas_res_of(rect)
+            if found:
+                return (int(found[1][0]), int(found[1][1]))
+        return None
+
+    def _hint_login(self, count, manual=True):
+        """检测到的客户端全是登录窗:提示登录角色后再点药丸。
+
+        登录窗判据与 keju 同源:标题抠不出角色名(`core.client_name` 空串,
+        见 client_common.find_client_canvases 的登录闸)。手动点药丸时在底行
+        用红字提示(本应用不弹模态框,2026-10-21 用户定的);启动自动定位只
+        落日志,别一开应用就打断游戏。
+        """
+        self.log(f"[铃铛]检测到 {count} 个登录窗口:"
+                 "请登录角色后再点左下角的药丸")
+        if manual:
+            ui_bell.flash_foot(self, "请先登录角色")
+
     # **界面入口已撤**(用户定的 2026-10-20,底图内置),但功能只是从界面移除:
     # 抽屉控件与下面三个回调全保留,要开放时把「地图采集」按钮加回去、
     # command 指到 on_map_import 即可 ----
@@ -568,23 +612,60 @@ class App:
         try:
             bst = self.engine.bell_tool.ui_state()
             bt = bst["target"]
-            # 扫描中发现客户端尺寸不支持(窗口被拉伸/换分辨率):弹一次提醒改回来
-            bad = bst.get("bad_size")
-            if bad:
-                if self._get("active_tool") == "bell":
-                    self._warn_bell_size(bad)
-            else:
-                self._bell_size_warned = ""   # 改回支持的分辨率:下次再歪了还能提醒
+            # 扫描中发现客户端尺寸不支持(窗口被拉伸/换分辨率):**角色名变红**
+            # 就是提示,不弹模态框、不换文案;改回支持档自动复原(2026-11-12
+            # 用户定的,与 keju「运行中只提示、不打断」一致)。没在跟客户端时
+            # 不染(占位句别变成红的)。
+            bad = bool(bst.get("bad_size")) and bool(bst.get("client"))
+            ui_bell.set_name_bad(self, bad)
+            # 工具自动接入/切换客户端(登录页登录角色后):底行跟着写角色名。
+            # 只在"工具那边换了"时动一次,别把用户刚点药丸选的那台顶回去。
+            auto_title = bst.get("client") or ""
+            lost = bool(bst.get("client_lost"))
+            if auto_title and not lost and auto_title != getattr(
+                    self, "_bell_auto_seen", ""):
+                self._bell_auto_seen = auto_title
+                if auto_title != str(self._get("bell_client") or ""):
+                    self._set("bell_client", auto_title)
+                    self._save_cfg()
+                # 名字没变也要刷:客户端退出后药丸已被收成占位句,同一台重新
+                # 登录得把名字写回来(2026-11-12)
+                self._refresh_bell_locate(bst.get("client_rect"))
+            elif lost:
+                # 客户端退出/回到登录页:药丸不能一直挂着旧角色名(用户 2026-11-12
+                # 报的)。配置里的 `bell_client` **留着** —— 同一个角色重新登录
+                # 会自动接回去,换角色登录也会自动接第一台。
+                self._bell_auto_seen = ""
+                if getattr(self, "bell_client_text", "") not in (
+                        "", ui_bell.CLIENT_NONE):
+                    self._refresh_bell_locate(None)
+                    self.log("[铃铛]客户端已退出或回到登录页 —— 底行不再挂旧角色名")
             # 目标清空(工具 reset)也要刷一次:不然窗口里还挂着上一次的地名
             bv = getattr(self, "bell_var", None)
-            if bv is not None and bv.get() != bt:
+            # 闸门是"文字**或** spot 变了":只比文字有个死角 —— bv.set 成功之后
+            # set_coord/draw_bell 要是抛一次异常(下面 except 吞掉),文字从此等于
+            # 新值、界面永远停在旧画面,要等**下一次**目标变更才跳过去。2026-11-07
+            # 朋友真机的疑影就是这个形状:日志 15:55:41 报了「妖魔位置: 朱紫国
+            # (133,10)」,小窗却停在宝象国,15:56:50 被旗子 tooltip 翻成长寿村时
+            # 才跳走 —— 朱紫国一帧都没上过屏。带上 spot 一起比,失败的那拍下一拍
+            # (50ms 后)自动重试,死锁不存在了。
+            spot_now = bst["spot"]
+            if bv is not None and (bv.get() != bt or getattr(
+                    self, "_bell_shown_spot", None) != spot_now):
                 bv.set(bt)
                 # 地名/坐标是两个控件,`bell_var` 改了它们不会自己变 ——
                 # 必须跟着写(原项目 2026-10-17 用户报"一直停在等待")。
                 ui_bell.set_coord(self, bt)
                 ui_bell.draw_bell(self)
-        except Exception:
-            pass
+                self._bell_shown_spot = spot_now
+        except Exception as err:
+            # 吞可以,别吞得无声无息:内容变了才记一条(50ms 一拍,别刷屏)
+            if getattr(self, "_bell_drain_err", "") != repr(err):
+                self._bell_drain_err = repr(err)
+                try:
+                    self.log(f"[界面]小窗刷新失败(下一拍自动重试): {err!r}")
+                except Exception:
+                    pass
         # 引擎线程看门狗:线程退出、或 OCR 假就绪(warmup 推理失败)都重建(10 秒冷却)
         try:
             alive = self.engine.is_alive()

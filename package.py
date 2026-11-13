@@ -46,7 +46,6 @@ KEEP_MAPS = ("calib.json",)
 # PyInstaller 6 的 datas 落在 _internal/ 下,首次运行时 ensure_data_files 才把
 # 它们镜像到 exe 旁边的 data/ —— 那份是运行时数据,首次打包时还不存在。
 REQUIRED = (
-    "_internal/data/bell_layouts.json",
     "_internal/data/bell.ico",             # 窗口/任务栏/exe 图标(标题栏那把)
     "_internal/data/maps/bounds.json",
     "_internal/data/maps/calib.json",

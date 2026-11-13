@@ -27,11 +27,12 @@ EXPECT = os.path.join(SHOTS, "expected.json")
 
 
 def find_part(rgb):
-    """按 App 的兜底口径截一块:DIALOG_BAND 圈范围 -> panel_box 找面板 ->
+    """离线对数的裁剪路:DIALOG_BAND 圈范围 -> panel_box 找面板 ->
     panel_text_cut 只留"有字的那一截"。
 
-    截图的分辨率都不是表里那两档(1011~1029 宽),所以这里走的是
-    `dialog_rect()` 的按比例兜底,和真机上不支持的尺寸同一条路。
+    真机主路 2026-11-08 起是 `fixed_dialog` 的画布×定稿比例、且已无比例兜底;
+    夹具截图的分辨率都不是支持的两档,这里照旧走 band+panel_box 这套离线路,
+    只验 panel_box/解析本身,不依赖真机主路。
     """
     band = tb.rel_rect((0, 0, rgb.shape[1], rgb.shape[0]), tb.DIALOG_BAND)
     crop = rgb[band[1]:band[3], band[0]:band[2]]

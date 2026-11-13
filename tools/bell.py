@@ -2,227 +2,36 @@
 
 自己一条线程、自己的区域和状态。跟 core 只有一条单行道:调用时现取截图 /
 OCR / 窗口枚举这些基础设施(这是唯一被允许的共享)。日志用 [铃铛]。
+
+提示文法在 tools/bell_parse.py,面板/签名在 tools/panel.py,底图与标定在
+tools/maps.py,画面找地图在 tools/mapfind.py,量框命令行在 tools/layout.py;
+本文件只留扫描状态机(BellTool)与它的调度常量。下面那串 import 里有一部分
+只是**再导出**给 gui/ui/tests 用(它们仍只认 tools_bell.XXX)。
 """
-import json
-import os
-import re
-import sys
 import threading
 import time
-import enum
 from dataclasses import dataclass, field
+
+from tools.bell_parse import (  # noqa: F401
+    HOVER_GAP, HOVER_STOP_WORDS, TRK_GAP, TRK_ITEM_GAP, TYPE_HOVER, TrkMode,
+    _RE_BELL_HOVER, _hit, _is_title, _plan_note, _spot, confirmed,
+    has_bell_words, hover_stop, in_bounds, known_map, scan_bell,
+    scan_bell_parts, trk_plan, watch_gap)
+from tools.layout import cmd_layout  # noqa: F401
+from tools.mapfind import find_map_rect  # noqa: F401
+from tools.maps import (  # noqa: F401
+    BELL_MAP_NAMES, MAP_STEMS, auto_calibrate_from_bounds, canon_map,
+    load_map_bounds, map_asset, map_asset_save_path, map_calib,
+    map_calib_from_bounds, map_names_in, map_pixel, map_ratio, save_map_calib)
+from tools.panel import (  # noqa: F401
+    DIALOG_BAND, DIALOG_DARK_FRAC, DIALOG_PAD, DIALOG_TEXT_FRAC,
+    DIALOG_TEXT_MINH, _dark_of, flat_panel_box, panel_box, panel_frac,
+    panel_sig, panel_text_cut, read_note, sig_diff)
 
 TAG = "铃铛"
 CYCLE_LOG_MARK = "对话框开新周期"    # 文件里的周期分界日志(**只进文件**,用户定的
 # 2026-10-17:界面上不再刷它)。它跟"报出目标[来自对话框]"那条同一刻写出。
 
-# 数据目录的根:跟 core.BASE_DIR 同一套规则(打包后跟着可执行文件走)。
-# 这里不能在模块级 import core —— core 要在模块级 import 本文件,反过来在
-# 模块级取 core 的名字只会拿到一个还没加载完的 core。
-if getattr(sys, "frozen", False):          # PyInstaller 打包后
-    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
-else:
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-# 降妖伏魔(铃铛):任务提示里的"地图名+坐标"。
-#
-# **六种怪各说各的,别把一种的文案套到另一种上**(用户给的截图实证)。
-# **每只怪的对话框都有自己的一句**,别偷懒写"同 XX" —— 2026-10-16 用户专门纠正过
-# 怯弱妖那条(它和巧智魔/梦魇魔**都不是**同一句,只是结构一样):
-#
-#   | 怪     | 对话框(原文,坐标处用 X(x,y) 代替)                        | 任务栏                                                    | 玩法 |
-#   | ------ | --------------------------------------------------------- | --------------------------------------------------------- | ---- |
-#   | 招魂幡 | 看看你包里的新物品"招魂帖",把它贴在指定位置,可以使得妖魔来自投罗网。去X(x,y)使用招魂帖,然后妖魔就会到来。 | 去X(x,y)使用"招魂帖",等待被诱惑的妖魔上钩并降服它。剩余时间2小时。 | 到点用招魂帖 |
-#   | 逐妖蛊虫| 有的妖魔行迹隐秘。…去X(x,y)使用蛊虫,然后跟着它,它会找到妖魔的。 | ①◆去X(x,y)使用"逐妖蛊虫",然后跟着地上的蛊虫找到妖魔。(**坐标跟对话框同值**) ②用道具后换成 ◆蛊虫发现妖魔在X(x,y),快去降服他吧。 | 到点用道具,**任务栏换一条新的坐标** |
-#   | 梦魇魔 | 这个妖魔值得一战,…我发现它的踪迹在X(x,y),少侠们准备好了就过去看看吧。 | 去X找梦魇魔。剩余时间2小时。 | 直接杀 |
-#   | 迷幻妖 | 接下来你们遇到的将是一只狡猾的迷幻妖。想要抓住它,可不容易。我发现它的踪迹在X(x,y),少侠们速度赶过去看看吧。 | 去X找迷幻妖。(只有图)                                      | 点怪会被传送走,回原点再点一次 |
-#   | 巧智魔 | 又一个！这次是一只精巧的巧智魔。它足智多谋而且狡猾无比。我发现它的踪迹在X(x,y),少侠们准备好了就过去看看吧。 | 去X找巧智魔。(只有图);杀完换新图**也没坐标**                | 鼠标停任务栏才临时显示"在X(x,y)处" |
-#   | 怯弱妖 | 我们要对付一只新的妖魔了,它是一只胆小而怯弱的怯弱妖,不过却是身形矫健,敏捷快速。估计,要被他耍好几次了。我发现它的踪迹在X(x,y),少侠们速度赶过去看看吧。 | 去X找怯弱妖。(只有图);怪会跑,新图也没坐标                   | 同上(鼠标悬停任务栏,才显示"在X(x,y)处") |
-#
-# 归纳成四种写法(代码只认这四种,不认怪名):
-#   对话框/招魂帖类:「去X(x,y)使用…」            → `_RE_BELL_USE` / `_RE_BELL_ANY`
-#   对话框/踪迹类  :「…我发现它的踪迹在X(x,y)…」  → `_RE_BELL_DIALOG`
-#   任务栏         :「◆蛊虫发现妖魔在X(x,y)…」    → `_RE_BELL_TRACK`
-#   悬停(巧智魔/怯弱妖):「在X(x,y)处」           → `_RE_BELL_HOVER`
-# 四种都要求"地图名 + 坐标"**同时**出现,而且**地图名必须是这六张之一**(用户确认
-# 铃铛只去这六张图):别的任务/聊天里的"某某地(12,34)"不能被当成妖魔位置。
-# 另有两条**没有虚词锚点**的兜底(`_RE_BELL_KNOWN` / `_RE_BELL_ANY`):扫描只喂
-# **小块**(对话框的文字带 / 表里量的任务栏框),小块里图名读花靠它们兜
-# (实测"建邮城"/"宝国")。
-BELL_MAPS = ("长寿村", "傲来国", "朱紫国", "建邺城",
-             "西梁女国", "西凉女国", "宝象国")
-# 官方名(没有"西凉"这个别名):采集底图/写标定都按这个列表来
-BELL_MAP_NAMES = ("长寿村", "傲来国", "朱紫国", "建邺城",
-                  "西梁女国", "宝象国")
-_MAP_NAME = r"([\u4e00-\u9fa5]{2,6})"        # 地图名:2~6 个汉字
-# 坐标:括号里那两个数。真机上 OCR 经常把分隔符认错 —— 实测见过
-# "（93.31）"(逗号读成句点)、"（69101）"(逗号整个丢了)、全角括号+空格。
-# 所以:分隔符放开(句点/顿号/空格/冒号/连字符都算),分隔符**丢了**的
-# 连写数字(69101)也接住 —— 但要用坐标范围反推唯一一种切法,不然不猜。
-_COORD_SEP = r"[,，.。·、:：;；\-–—/\\\s]"
-_COORD = (r"[^()（）\d]{0,4}[（(]?\s*"
-          r"(?:(?P<cx>\d{1,3})\s*" + _COORD_SEP + r"{1,3}\s*(?P<cy>\d{1,3})"
-          r"|(?P<crun>\d{4,7}))"
-          r"\s*[)）]")
-# 对话框说的(最权威):「…我发现它的踪迹在朱紫国(144,99),少侠们速度赶过去看看吧。」
-_RE_BELL_DIALOG = re.compile(r"踪迹在" + _MAP_NAME + _COORD)
-# 任务栏 / 鼠标悬停说的:「◆蛊虫发现妖魔在宝象国(99,54)…」「在建邺城(15,122)处」
-_RE_BELL_TRACK = re.compile(
-    r"(?<!踪迹)(?:妖魔在|发现在|出现在|在)" + _MAP_NAME + _COORD)
-# 招魂幡/逐妖蛊虫那种"没锚点"的写法:「去建邺城(101,127)」。`(?:去|到)?` 是可选的,
-# 所以**光秃秃的「长寿村(50,60)」也进得来** —— 靠它兜住 OCR 把图名读花的情况
-# (实测"建邮城"/"宝国")。以前读**整窗**时这里还要求"必须带去/到锚点"的宽窄两条
-# 口径(`_RE_BELL_ANY_ANCHORED`),整窗那条路删了(2026-10-21,只支持两档分辨率,
-# 任务栏框一律来自分辨率表),口径就只剩这一条。
-_RE_BELL_ANY = re.compile(r"(?:去|到)?" + _MAP_NAME + _COORD)
-# 招魂幡/逐妖蛊虫那种"用道具"的写法:「去建邺城(101,127)使用招魂帖…」
-# (靠后面的"使用"和别的任务的「去X(x,y)找Y」区分开)
-_RE_BELL_USE = re.compile(r"(?:去|到)" + _MAP_NAME + _COORD + r"使用")
-# 鼠标停在任务栏上才冒出来的悬停行:「在建邺城(15,122)处」—— 巧智魔/怯弱妖的
-# 第二个坐标就长这样,而且可能只闪一下(见 cursor_pos / HOVER_GROW / HOVER_LIFT)
-_RE_BELL_HOVER = re.compile(r"在" + _MAP_NAME + _COORD + r"处")
-# 没锚点、但地图名是我们认识的六张:直接「<地图名>(x,y)」也认(老写法兜底)
-_RE_BELL_KNOWN = re.compile(
-    r"(" + "|".join(BELL_MAPS) + r")" + _COORD)
-# OCR 认错地图名很常见(实测"建邺城"读成"建邮城"),常见错法归一到官方名
-_BELL_CANON = {
-    "长寿": "长寿村", "常寿": "长寿村", "长寿郊外": "长寿村",
-    "傲来": "傲来国", "敖来": "傲来国", "傲莱": "傲来国",
-    "朱紫": "朱紫国", "珠紫": "朱紫国", "朱柴": "朱紫国",
-    "建邺": "建邺城", "建业": "建邺城", "建邮": "建邺城", "建邦": "建邺城",
-    "西梁": "西梁女国", "西凉": "西梁女国", "西粱": "西梁女国",
-    "宝象": "宝象国", "宝像": "宝象国",
-}
-
-
-def canon_map(name: str) -> str:
-    """把 OCR 认出来的地图名归一到官方写法(认不出就原样返回)。
-
-    归一表按前缀匹配:"建邮城" 命中 "建邮" -> "建邺城"。
-    """
-    name = (name or "").strip()
-    for wrong in sorted(_BELL_CANON, key=len, reverse=True):
-        if name.startswith(wrong) or name == wrong:
-            return _BELL_CANON[wrong]
-    return name
-
-
-def known_map(name: str):
-    """图名(已归一)是不是铃铛会去的那六张之一;不是返回 None。
-
-    铃铛只会把人送去这六张图,所以"认不出来"一律当没认到 —— 不然任务追踪/聊天里
-    随便一句"某某地(12,34)"都会被当成妖魔位置。
-
-    前两条是正常匹配;最后那条兜的是**真机上地图名被读花**的情况:实测
-    "宝象国"被读成"宝国"(两个字被并成一个)、"建邺城"读成"建邮城"。判据是
-    "跟某张图**对得上至少两个字**,而且只对得上这一张"。所以"长安"(跟"长寿村"
-    只共一个"长")不会放行 —— 那是别的任务里的地名,不能当真。
-    """
-    n = canon_map(name)
-    for m in BELL_MAP_NAMES:
-        if n == m or n.startswith(m) or (len(n) >= 2 and m.startswith(n)):
-            return m
-    hits = [m for m in BELL_MAP_NAMES if len(set(n) & set(m)) >= 2]
-    return hits[0] if len(hits) == 1 else None
-
-
-def in_bounds(name, x, y):
-    """这个坐标落在这张图的坐标范围里吗(没范围就放行)。
-
-    鼠标悬停那条路"只读到一次也认",所以多一道最便宜的检查:范围对不上
-    多半是数字读花了,宁可先不认。
-    """
-    try:
-        minx, miny, maxx, maxy = [float(v)
-                                  for v in load_map_bounds().get(name)]
-    except Exception:
-        return True
-    return minx <= x <= maxx and miny <= y <= maxy
-
-
-def _split_run(run, name):
-    """OCR 把分隔符整个吃掉时("69101")按坐标范围反推切法。
-
-    只有**唯一一种**切法落在这张图的范围内才算数 —— 切不开就当没认到,不猜。
-    """
-    bounds = load_map_bounds().get(name)
-    if not bounds or not run or len(run) < 4:
-        return None
-    try:
-        minx, miny, maxx, maxy = [float(v) for v in bounds]
-    except Exception:
-        return None
-    got = []
-    for i in range(1, min(4, len(run))):
-        x, y = int(run[:i]), int(run[i:])
-        if minx <= x <= maxx and miny <= y <= maxy:
-            got.append((x, y))
-    return got[0] if len(got) == 1 else None
-
-
-def _coord_of(m, name):
-    """从匹配里取出 (x, y)。"""
-    if m.group("cx"):
-        return int(m.group("cx")), int(m.group("cy"))
-    return _split_run(m.group("crun"), name)
-
-
-def _hit(text, pat):
-    """在这段文字里找第一处"地图名 + 坐标"。
-
-    匹配上了但**校验不过**(图名不是那六张 / 坐标取不出来)时,不是跳到这次匹配的
-    末尾接着找,而是**往回退一个字**(`m.start() + 1`)重试 —— 贪心组会把开头那几个
-    字也当成图名、连坐标一起吃掉,`finditer` 不回头,真正能认的那一处就被吞了。
-    实测(同一句话只差前面几个字):
-      `长寿付（38.1）使用 妖贵虫`             -> 认得出
-      `降妖伏魔 长寿付（38.1）使用 妖贵虫`    -> 原来认不出(通配组把"降妖伏魔"当图名)
-      `1070敏任务追踪魔来国（101，14）使妖`    -> 原来认不出(真正能认的"来国（101，14）"被吞)
-    校验逻辑一个字没动(`known_map` / `_coord_of`,调用方的 `in_bounds`、"见过两次"
-    也照旧),所以不会多出误报;第一处就命中的情况结果不变。
-    """
-    pos = 0
-    while pos <= len(text):
-        m = pat.search(text, pos)
-        if not m:
-            return None
-        name = known_map(m.group(1))
-        if name:
-            got = _coord_of(m, name)
-            if got:
-                return (name, got[0], got[1])
-        pos = m.start() + 1
-    return None
-
-
-_BELL_TITLE = "降妖伏魔"          # 任务追踪里,本任务的标题
-_BELL_TITLE_SPAN = (80, 140)      # 标题上 80 / 下 140 像素内才算本任务的说明
-
-# ---- 扫描范围与"便宜的门控":先花 1~2ms 判断要不要 OCR,再决定花那 200ms ----
-# 游戏把对话框贴在窗口下方居中(底边≈0.85H,字越多越往上长),位置基本固定;
-# 面板"暗且不彩"的像素占比远高于它身后那个一直在动的游戏世界 —— 实测 15 张真
-# 截图(有面板 0.89~0.95 / 没面板 0.35~0.43),用这个当"有没有对话框"的判据,
-# 1ms 出结果,不花 OCR 的钱。
-DIALOG_BAND = (0.08, 0.34, 0.96, 0.90)   # 对话框可能出现的那块(占客户端窗口比)
-DIALOG_PAD = 8                           # 按面板框裁字时往外留几个像素
-# 对话框的字挤在面板**上半部分**(实测 2~3 行都在顶上):只读那一截就够,
-# 面板下面大半是空的 —— 每次省三成时间,报点也更快。
-DIALOG_TEXT_FRAC = 0.62
-DIALOG_TEXT_MINH = 170
-DIALOG_DARK, DIALOG_SAT = 105, 70        # "暗且不彩"的上限
-DIALOG_DARK_FRAC = 0.60                  # 一行/一列里暗像素占比超过它才算面板
-# 框**里面**的暗比:真对话框 0.82~0.94(实测 13 张图),而"夜里整条带子都暗"
-# 那种假框只有 0.6~0.7 —— 真机日志里它每轮都骗我们去 OCR(读到的是客户端页签名),
-# 一秒两三次,既慢又白烧显卡。
-PANEL_MIN_DARK = 0.78
-# **结构关**(2026-10-16 用户实测:进场打怪时战斗画面被当成面板,OCR 读回来的
-# 是 冷昕T/血条 这些)。战斗画面同样能"一整块暗"(框内暗比实测 0.91),暗比
-# 挡不住;但对话框是**文字行**——亮/彩像素只挤在少数几行里,战斗画面的人/怪/
-# 血条摊满所有行(两张真图实测:对话框"有内容的行"占 0.23,战斗画面 0.77)。
-DIALOG_BRIGHT = 130                      # "亮"的下限(文字笔画和血条都过它)
-BUSY_ROW_FRAC = 0.08                     # 一行里"亮|彩"占比到这么多算"有内容"
-PANEL_MAX_BUSY = 0.50                    # 有内容的行超过这个占比就不是面板
-DIALOG_MIN_H = 200                       # 面板至少这么高(真对话框实测 244~405)
 DIALOG_GAP = 2.0                         # 面板内容没变时,这么久兜底重读一次
 # 非铃铛面板(买东西/闲聊/聊天频道)的内容一直在滚:变了也别每拍都读 —— 真机
 # 上这种占 OCR 的大头(2026-10-21 会话:490 秒里 267 次 OCR 全是它,每次一两百
@@ -240,14 +49,7 @@ PEND_TTL = 10.0                          # 待确认的对话框值最多挂这�
 # "鼠标算不算在任务栏附近"(触发器要大一圈)。
 HOVER_GROW = 90                          # 鼠标"在任务栏附近"的放宽量(触发器要大一圈)
 HOVER_LIFT = 120                         # 悬停那行要往上多留一截才圈得住
-# ---- 任务栏读不读、读多勤:按**任务类型**决定(用户定的规矩) ----
-#   逐妖蛊虫:用道具后任务栏会换一条新坐标 -> 0.5 秒盯,直到**同一个值连读两次**
-#             (确认到手)就停;
-#   巧智魔/怯弱妖:第二个坐标只在鼠标悬停时才出现 -> 0.25 秒盯,读到坐标就停;
-#   其余(招魂帖/招魂幡/梦魇魔/迷幻妖):坐标对话框里就有 -> **一次都不读**。
-# 类型**只由对话框给**(见 `_publish` / `trk_plan`),不用用户配置。
-TRK_ITEM_GAP = 0.5                       # 逐妖蛊虫读到没确认的候选时,下一拍紧跟的节奏
-TRK_GAP = 0.6                            # 其余档的节奏
+TRK_HIST = 6                             # 留最近几次任务栏读数(判"认准了没有")
 # **item 档的内容签名门控**(2026-10-21):等的是"任务栏换了字",不是定时读 ——
 # 原来 0.5s 一次的定时 OCR,在等道具生效的几十秒里几乎全是白读。现在没变最多
 # TRK_SIG_GAP 兜底一次、变了当拍就读;只有读到**没确认的候选**时才收紧回
@@ -257,44 +59,7 @@ TRK_SIG_GAP = 2.0
 # (差 0.5~1.0),比"整页换"的 SIG_MIN=10 低得多;任务栏深底不透光,背景在动进
 # 不了签名(对话框同款实测差 0)。阈值偏低的代价只是"偶尔多读一次",不会漏。
 TRK_SIG_MIN = 0.5
-TYPE_ITEM = "逐妖蛊虫"                     # 任务栏会刷新新坐标的那种
-TYPE_HOVER = ("巧智魔", "怯弱妖")           # 第二个坐标要悬停才出现的那种
-# **话术门槛**(用户定的 2026-10-16):对话框那一拍读到的**整段文字**里必须含一个
-# "铃铛任务的核心词",才认那段里的"图名+坐标"。挡的是这条真实路径:面板收紧失败时
-# (`box = 整块`)会把下方的聊天/世界频道一起读进来 —— 聊天里一句
-# 「去长寿村(50,60)集合,别乱跑」正好长成"图名+坐标",而且它是**静态行**:
-# "两遍一致"对静态内容必然一致,挡不住它。
-# 用"或"、而且都挑短的:OCR 丢一两个字还剩别的词能命中(整句模板一丢字整条就废)。
-# **任务栏那一支不吃这道门槛**:它已经有"见过两次"这道复核;更要紧的是悬停那行
-# (`在建邺城(15,122)处`)单独读出来时一个核心词都没有,加了会把 hover 档废掉。
-BELL_WORDS = ("使用", "踪迹在", "招魂", "蛊虫", "妖魔",
-              "梦魇魔", "迷幻妖", "巧智魔", "怯弱妖")
-HOVER_GAP = 0.25                         # 鼠标停任务栏上时的节奏(悬停行可能只闪一下)
-# ---- hover 档的"收手话术"(用户给的 4 张对话框截图,2026-10-16) ----
-# 怯弱妖:
-#   1. 三番两次，我都被你累断气了。你怎么这么执着啊。跑不动了。
-#      (红字)终于逮到你了，看打。 / 我也跑累了，等下…
-#   2. 打就打，我……我，我……你怎么不怕我。
-# 巧智魔:
-#   3. 金蝉脱壳可是我的拿手好戏，刚试过了，拿我没办法吧。
-#      (红字)也就是个会跑的小妖魔，看我再来收服…等我准备好了再来。
-#   4. 你再抓，我再跑；你再抓，我再跑呀……嘻嘻。
-# 含义:这两个怪的任务里"第二个坐标"是靠鼠标悬停那行喂进来的;出现这些话术说明
-# 追/逃那一段结束了 -> 这个周期**没必要再扫任务栏**。判据**只取短而有辨识度的
-# 核心词**:整句太长,OCR 读花时对不上(实测逗号/省略号经常读成别的,所以还留了
-# 不带标点的 `我再跑` 兜底);这两个怪都走 hover,话术不会串到别的类型上,所以
-# **不必按怪分**,命中任意一条即收手。
-# **2026-10-16 用户调整过词表**:去掉 `金蝉脱壳`(它不再触发收手),加上
-# `拿手好戏` / `刚试过了`(巧智魔)和 `三番两次` / `累短气` / `打就打`(怯弱妖)。
-# **2026-10-17 又去掉 `拿手好戏`**(用户定的:那句「金蝉脱壳可是我的拿手好戏」
-# 不再触发收手,巧智魔这边只留 `刚试过了`)。
-# `累短气` 是用户给的写法;**`累断气` 也留着** —— 截图原文是"我都被你累断气了",
-# 断/短 两个方向都可能被 OCR 读花,留两个都认。
-HOVER_STOP_WORDS = ("逮到你了", "跑不动了", "你怎么不怕我",
-                    "三番两次", "累短气", "累断气", "打就打",
-                    "刚试过了", "你再抓，我再跑", "我再跑")
-TRK_HIST = 6                             # 留最近几次任务栏读数(判"认准了没有")
-TRK_CONFIRM = 2                          # 同一个值要见过这么多次才认(治误读)
+
 # 连着这么多次"一个字都没读到"就写一条诊断日志(**只记数、不动框**;
 # 用户定的 2026-10-16:面板被游戏藏起来是正常的 —— 实测约一半读数是 0 块,而且
 # 这三类任务要拿坐标时玩家本来就得开着面板;作废+重锚一次要耗 8×0.25s ≈ 2 秒,
@@ -319,18 +84,13 @@ DLG_LIMIT_SIDE = 900
 # 320/min 比 480/min 还慢十几毫秒,所以复读不另设档位。
 
 
-def client_name(title):
-    """从客户端窗口标题里抠角色名:「… - (湖北2区[黄鹤楼] - 祭花′[29024311])」-> 祭花′。
-
-    降妖伏魔只管**一台**客户端,多开时要让用户按角色名选,所以要能从标题里
-    读出一个认得出来的名字。
-    """
-    tail = (title or "").split(" - ")[-1]
-    return tail.split("[")[0].strip("() （）").strip()
-
-
 def client_choices():
-    """枚举到的客户端 -> [(角色名, 标题, 矩形)];界面拿去弹列表让用户选。"""
+    """枚举到的**已登录**客户端 -> [(角色名, 标题, 矩形)];界面拿去弹列表。
+
+    登录窗(标题抠不出角色名)不列 —— 与 `find_client_canvases` 的登录闸同一
+    判据(client_common,与 keju 同源):登录角色才识别,别让人选进来又提示
+    分辨率/没有画面。全是登录窗时返回空,界面据此提示「请先登录角色」。
+    """
     import core
     out = []
     try:
@@ -338,8 +98,10 @@ def client_choices():
     except Exception:
         return out
     for title, box in found:
-        out.append((client_name(title) or title, title,
-                    [int(v) for v in box]))
+        name = core.client_name(title)
+        if not name:
+            continue
+        out.append((name, title, [int(v) for v in box]))
     return out
 
 
@@ -358,11 +120,29 @@ def rel_rect(region, frac):
             int(x0 + w * bx), int(y0 + h * by)]
 
 
+def trk_seed_rel(region, found):
+    """任务栏框:画布×`TRK_BOXES` 的**绝对框** -> 相对窗口(`SlotState.trk` 口径)。
+
+    `core.trk_rect` 锚在画布上、给的是屏幕坐标;扫描时 `abs_rect` 还要再加一次
+    窗口原点 —— 不先减掉就会按窗口位置整体偏掉(窗口不在 (0,0) 时尤其明显)。
+    拿不到画布/这一档没框返回 None。
+    """
+    import core
+    if not found:
+        return None
+    box = core.trk_rect(found[0], found[1])
+    if not box:
+        return None
+    x0, y0 = int(region[0]), int(region[1])
+    return [int(box[0]) - x0, int(box[1]) - y0,
+            int(box[2]) - x0, int(box[3]) - y0]
+
+
 def fit_rect(region, rect):
     """把 rect 整体挪进 region(**宽高不变**),挪了返回新矩形、没挪返回原矩形。
 
     给"表里的任务栏框"用:框是按某台机器的窗口量的,换台机器尺寸差一截
-    (表按 ±20px 容差命中别的行)时,直接用就有一截落在 region 外面 —— 截图在那个
+    (表按 ±8px 容差命中别的行)时,直接用就有一截落在 region 外面 —— 截图在那个
     边界就切掉,行尾的坐标就没了(实测 `宝象 40，12）`(少"1"和"国")、
     `去长寿村找怯弱。`(少"妖")。优先保住**右边/下边**(坐标在行尾、在下面那行),
     所以是整块左移/上移。
@@ -398,165 +178,6 @@ def edge_note(rect, region):
             if hit]
     return f" [宽{w}/{'、'.join(bits) if bits else '没贴边'}]"
 
-
-def panel_text_cut(crop, box):
-    """面板里"真有字"的那一截:上半部分(留够 2~5 行的余量)。
-
-    读整个面板的话,下面大半是空的 —— 白花的像素。裁到文字带之后每次 OCR
-    省三成时间,而且面板一出现就能更快报点。
-    """
-    keep = max(DIALOG_TEXT_MINH, int((box[3] - box[1]) * DIALOG_TEXT_FRAC))
-    return _cut(crop, (box[0], box[1], box[2], min(box[3], box[1] + keep)))
-
-
-def _cut(arr, box, pad=DIALOG_PAD):
-    """按 (x0,y0,x1,y1) 裁一块,往外留 pad,裁到画面里。"""
-    h, w = arr.shape[:2]
-    x0 = max(0, int(box[0]) - pad)
-    y0 = max(0, int(box[1]) - pad)
-    x1 = min(w, int(box[2]) + pad)
-    y1 = min(h, int(box[3]) + pad)
-    return arr[y0:y1, x0:x1]
-
-
-def _dark_of(rgb):
-    """整块画面的"暗且不彩"掩码(**::2 半分辨率采样**,panel_frac / panel_box 共用)。
-
-    掩码里的 astype/max/min 是门控最贵的纯 numpy 活(900x460 的对话框带上全
-    分辨率 14ms,::2 只要 3.6ms);同一拍里 panel_frac 和 panel_box 要的正是
-    同一个东西 —— 算一遍传来传去。缩样后暗比的偏差实测 ~0.001(0.7500 对
-    0.7512),对 0.60/0.78 两道门槛的余量(假框 0.35~0.43 / 真面板 0.82~0.94)
-    毫无影响;panel_box 里用掩码切片时坐标记得 //2。
-    """
-    import numpy as np
-    a = np.asarray(rgb)
-    if a.ndim != 3 or a.shape[2] < 3 or not a.size:
-        return None
-    a = a[::2, ::2].astype(np.int16)
-    mx = a.max(axis=2)
-    return (mx < DIALOG_DARK) & ((mx - a.min(axis=2)) < DIALOG_SAT)
-
-
-def panel_frac(rgb):
-    """这块画面里"暗且不彩"的像素占比(对话框那种半透明黑面板很高)。"""
-    dark = _dark_of(rgb)
-    return 0.0 if dark is None else float(dark.mean())
-
-
-def panel_box(rgb, dark=None):
-    """对话框那块深色面板在画面里的外接框(相对这块画面);没有返回 None。
-
-    dark:调用方同一拍里已经为 `panel_frac` 算过一次的暗掩码(见 `_dark_of`,
-    **::2 半分辨率**,切片时坐标 //2)—— 递进来就省掉这里两遍全分辨率的
-    max/min(面板开着时一轮省 25~40ms)。
-
-    面板是"暗且不彩"的一整块:先在 1/4 缩略图上按**行**找"这一行里暗像素占比
-    够高"的范围,再在这个范围里按**列**找。比只看整块占比多给一样东西 ——
-    面板**在哪**:于是 OCR 只喂面板那一块,既不带身后一直在动的游戏世界,也不带
-    上方任务栏那两行(它也会带坐标,混进来会被当成"对话框说的")。
-    """
-    import numpy as np
-    a = np.asarray(rgb)
-    if a.ndim != 3 or a.shape[2] < 3 or not a.size:
-        return None
-    if dark is None:
-        dark = _dark_of(a)
-        if dark is None:
-            return None
-    h, w = a.shape[:2]
-    small = a[::4, ::4].astype(np.int16)
-    mx = small.max(axis=2)
-    mn = small.min(axis=2)
-    small_dark = (mx < DIALOG_DARK) & ((mx - mn) < DIALOG_SAT)
-    rows = np.nonzero(small_dark.mean(axis=1) >= DIALOG_DARK_FRAC)[0]
-    if not rows.size:
-        return None
-    y0, y1 = int(rows[0]), int(rows[-1]) + 1
-    cols = np.nonzero(small_dark[y0:y1].mean(axis=0) >= DIALOG_DARK_FRAC)[0]
-    if not cols.size:
-        return None
-    box = (int(cols[0]) * 4, y0 * 4,
-           min(w, (int(cols[-1]) + 1) * 4), min(h, y1 * 4))
-    # 面板是一条**横贯窗口的大横条**(实测真对话框 868~902 x 244~405):
-    # 只够半屏宽的多半是游戏世界里的一坨暗色建筑(实测误报 0.27~0.36W),
-    # 太矮的(实测误报 800x50~150)是地图窗边框/UI 黑条之类 —— 两条都卡住。
-    if box[2] - box[0] < 0.6 * w or box[3] - box[1] < DIALOG_MIN_H:
-        return None
-    # 最后三关:①整条带子大部分是暗的(真对话框盖住条带 0.61~0.95;游戏世界里
-    # 凑巧"又宽又高"的暗块只有 0.29~0.58);②**框里面**得更暗(真对话框 0.82~0.94,
-    # "夜里整条带子都暗"的假框 0.6~0.7);③**结构**:框里的亮/彩像素得挤在少数
-    # 几行(那是文字),摊满所有行的是战斗画面的人/怪/血条(见 PANEL_MAX_BUSY 处
-    # 的注释,两张真图实测 0.23 对 0.77)。
-    if float(dark.mean()) < DIALOG_DARK_FRAC:
-        return None
-    if float(dark[box[1] // 2:box[3] // 2,
-                  box[0] // 2:box[2] // 2].mean()) < PANEL_MIN_DARK:
-        return None
-    content = ((mx[y0:y1, int(cols[0]):int(cols[-1]) + 1] >= DIALOG_BRIGHT)
-               | ((mx[y0:y1, int(cols[0]):int(cols[-1]) + 1]
-                   - mn[y0:y1, int(cols[0]):int(cols[-1]) + 1]) >= DIALOG_SAT))
-    busy = (content.mean(axis=1) >= BUSY_ROW_FRAC).mean()
-    if busy >= PANEL_MAX_BUSY:
-        return None
-    return box
-
-
-def trk_plan(text):
-    """这段文字说的任务,任务栏要不要盯、为什么盯(用户定的规矩)。
-
-    返回 TrkMode.ITEM(逐妖蛊虫:盯到同一个坐标连读两次)/ TrkMode.HOVER
-    (巧智魔/怯弱妖:盯到读出坐标)/ TrkMode.NONE(其余:对话框里就有坐标,
-    一次都不用读)。
-
-    **只拿对话框的文字喂它**(用户定的 2026-10-16):类型由对话框开新周期那一刻
-    定下,任务栏那份文字永远不参与定类型(连"对话框认不出时拿它当备胎"都不许)。
-    注意**招魂帖/招魂幡 → NONE**:只有逐妖蛊虫才需要第二个坐标(招魂帖是招魂幡
-    用的道具,别把"用道具"当成"阿要盯任务栏")。
-    """
-    t = text or ""
-    if TYPE_ITEM in t or "蛊虫" in t:      # 用道具后刷新出来的那行写的是"蛊虫…"
-        return TrkMode.ITEM
-    if any(n in t for n in TYPE_HOVER):
-        return TrkMode.HOVER
-    return TrkMode.NONE
-
-
-def watch_gap(mode):
-    """这一档"盯着看"的节奏:逐妖蛊虫 0.5s、巧智魔/怯弱妖 0.25s(悬停行只闪一下)。"""
-    return {"item": TRK_ITEM_GAP, "hover": HOVER_GAP}.get(mode, TRK_GAP)
-
-
-def _plan_note(mode):
-    """日志里那句"这轮任务栏怎么用"。"""
-    return {"item": "要盯新坐标(逐妖蛊虫,连读两次就停)",
-            "hover": "要盯悬停坐标(巧智魔/怯弱妖,读到就停)",
-            "none": "一次都不读(对话框里就有坐标,或没认出任务名)",
-            }.get(mode, mode)
-
-
-def hover_stop(text):
-    """对话框这段文字里有没有 hover 档的"收手话术";命中就返回那个核心词,没有返回 ""。
-
-    表见 `HOVER_STOP_WORDS`(4 张截图的原文也在那儿)。这**只**给 hover 档用:命中说明
-    追/逃那一段结束了,这个周期不再扫任务栏(调用点见 `_scan` 的对话框那一拍)。
-    几处都命中时返回表里靠前的那个 —— 日志里报哪个都一样,反正都要收手。
-    """
-    t = text or ""
-    for w in HOVER_STOP_WORDS:
-        if w in t:
-            return w
-    return ""
-
-
-def has_bell_words(text):
-    """这段文字里有没有"铃铛任务的核心词"(话术门槛,表见 `BELL_WORDS`)。
-
-    只给**对话框那条主路**用:读到的整段文字里一个核心词都没有,那这段里的"图名+坐标"
-    就当读花、不认(聊天/世界频道那种静态行就是这么被挡下的)。任务栏那一支不吃它 ——
-    悬停那行单独读出来时没有核心词,吃了会把 hover 档废掉。
-    """
-    t = text or ""
-    return any(w in t for w in BELL_WORDS)
 
 
 def cursor_pos():
@@ -603,853 +224,38 @@ def hover_rect(rect, cur, region, lift=HOVER_LIFT, half=260, up=90, dn=50):
             min(rx1, int(x1)), min(ry1, int(y1))]
 
 
-SIG_GRID = (24, 48)                      # 面板内容签名的采样格(行, 列)
+# 支持档判定与文案(supported_res / supported_res_text)在 clients.py(本应用
+# 口径,档位表本体 SUPPORTED_RES 在 client_common 两边同源),core 再导出 ——
+# 这里只经 core 调用,别在本文件抄一份(两个真相必分叉)。
 
 
-def panel_sig(rgb, box, grid=SIG_GRID):
-    """面板**里面**的内容签名(定长小图)。**先按亮度二值化再采样**。
+# 对话框在**游戏画面(WSGAME 画布)**里的定稿比例表(`DLG_RATIOS`)和
+# 画布×比例的纯几何(`dialog_rect`)在 client_common(与 keju 同源,core 再导出)
+# —— 那是**游戏属性**(对话框贴在画布哪里由游戏决定),真机量一次两边共用,
+# 不在 tools 再抄一份;这里的 fixed_dialog 只管"够不够暗/读不读/日志说什么"。
 
-    为什么二值化(2026-10-17 用户报"又卡死了"后改的):游戏的面板是**半透明**的,
-    身后的世界一直在动 —— 直接采原始像素,背景一动签名就变,门控把"背景在动"
-    当成"换了一段话",于是**每 10 秒读 8~12 次**(一半还是"非铃铛对话"白烧),
-    GPU 一直被占着,游戏一卡一卡。二值化后进签名的只有"哪些像素亮"(= 文字笔画
-    的位置),背景明暗怎么变都不影响;真翻页(字换了)掩码照样变 ✔。
-    采样成固定 24x48 是为了让签名跟面板大小无关:框的边缘会抖 ±4 像素;
-    返回值和老签名同形 (24,48,3),`sig_diff`/`SIG_MIN` 一个字不用改。
-    """
-    import numpy as np
-    a = np.asarray(rgb)
-    if a.ndim != 3 or not a.size:
-        return None
-    h, w = a.shape[:2]
-    x0 = max(0, min(int(box[0]), w - 1))
-    y0 = max(0, min(int(box[1]), h - 1))
-    x1 = max(x0 + 1, min(int(box[2]), w))
-    y1 = max(y0 + 1, min(int(box[3]), h))
-    sub = a[y0:y1, x0:x1]
-    mask = (sub.max(axis=2) >= DIALOG_BRIGHT).astype(np.uint8) * 255
-    sh, sw = mask.shape[:2]
-    ys = np.linspace(0, sh - 1, grid[0]).astype(int)
-    xs = np.linspace(0, sw - 1, grid[1]).astype(int)
-    return np.repeat(mask[ys][:, xs][:, :, None], 3, axis=2)
 
+def canvas_res_of(region):
+    """窗口矩形 -> 里面那层游戏画面(WSGAME)的 [矩形, 游戏分辨率, 版式];没有 None。
 
-def sig_diff(a, b):
-    """两个签名差多少(平均绝对差);缺一个或形状不同就当"变了"。"""
-    import numpy as np
-    if a is None or b is None:
-        return 999.0
-    if getattr(a, "shape", None) != getattr(b, "shape", None):
-        return 999.0
-    return float(np.abs(a.astype(np.int16) - b.astype(np.int16)).mean())
-
-
-def confirmed(hist, need=TRK_CONFIRM):
-    """最近几次读数里,**从新往旧**找到第一个出现过 ≥need 次的值;没有返回 None。
-
-    治的是真机上把同一段文字读花:实战日志里同一只怪的任务栏被读成
-    宝象国(56,79)/(66,79)/(50,79)/(56,7)/(56,1) 五种,每种都当"新目标"报了出去,
-    16 秒里报 9 个点 —— 红点在原地乱跳。真值会反复出现(10~29 次),
-    误读基本只出现一次,所以要"见过两次才算数"。
-    """
-    for v in reversed(list(hist or [])):
-        if v and hist.count(v) >= need:
-            return v
-    return None
-
-
-def read_note(what, size, nblock, ms, got=None, blocks=None):
-    """一行"识别过程"日志:扫了哪块、多大、几个文字块、多久、认到了什么。
-
-    读到的原文**两边都带上**。没认到时最想知道"它到底读成了啥"(出过一次
-    "任务栏一直没认到",当初没写字,事后完全看不出原因);认到的时候也要 ——
-    不然"建邺城(101,127) 是怎么变成建邺城(24,108) 的"只能靠猜(实测踩过)。
-    """
-    w, h = int(size[0]), int(size[1])
-    seen = " ".join((b.get("text") or "") for b in (blocks or []))[:26]
-    if got:
-        tail = f"{got[0]}({got[1]},{got[2]})"
-        if seen:
-            tail += f" 读到:{seen}"
-    else:
-        tail = f"没认到({seen})" if seen else "一个字都没读到"
-    return f"{what} {w}x{h} 块{nblock} {ms:.0f}ms → {tail}"
-
-
-def _spot(bell):
-    """一个目标在日志里的写法(`地图名 (x,y)`);几处文案都按这一份来。"""
-    return f"{bell[0]} ({bell[1]},{bell[2]})"
-
-
-def _is_title(text):
-    """这一行是不是「降妖伏魔」的标题行。
-
-    那行是加粗的绿字,OCR 常常把后两个字认错(实测"降妖闪通"/"降妖快通"/
-    "降妖伏麾"都有),但**前两个字"降妖"每次都认对** —— 所以认前两个字就够,
-    再加"整行不能太长"把它和正文里出现"降妖"的句子分开。
-    """
-    t = (text or "").strip()
-    if _BELL_TITLE in t:
-        return len(t) <= 12
-    if "降妖" in t:
-        return len(t) <= 8
-    # **2026-10-17 加第三种**:整行**以「降」开头**且不长也算 —— 实测标题被读成
-    # 「降双快通」/「降欢风衡」时前两个字就花了,而"降"一般还认得出;别的任务
-    # (师门/法宝合成/签到答题…)标题都不以「降」开头,所以不会误认。框的位置
-    # 仍由**表头**定,这条只用来确认"面板里挂的是降妖伏魔"。
-    return t.startswith("降") and len(t) <= 8
-
-
-def _order(blocks, tol=12):
-    """把文字块按"行"排好:同一行里按 x 排,行与行按 y 排。
-
-    OCR 给的是每个块的框,同一行的两个块底边(y1)能差一两个像素 —— 直接按
-    (y1, x1) 排会把右边那块甩到下一行去,拼出来的句子就乱了。实测:
-    `蛊虫发现妖魔在宝` + `国150.54)` + `，快去降服` 三个块,直接排变成
-    "…在宝，快去降服国150.54)…" —— "在宝国" 再也拼不出来,坐标就丢了。
-    """
-    rows = []
-    for b in sorted(blocks, key=lambda b: b.get("y1", 0) + b.get("y2", 0)):
-        mid = (b.get("y1", 0) + b.get("y2", 0)) / 2.0
-        if rows and abs(mid - rows[-1][0]) <= tol:
-            rows[-1][1].append(b)
-        else:
-            rows.append((mid, [b]))
-    out = []
-    for _mid, row in rows:
-        out.extend(sorted(row, key=lambda b: b.get("x1", 0)))
-    return out
-
-
-def _title_y(blocks):
-    """「降妖伏魔」标题那一行的 y(找不到返回 None)。"""
-    for b in _order(blocks):
-        if _is_title(b.get("text")):
-            return b.get("y1", 0)
-    return None
-
-
-def _bell_span(blocks, title_y):
-    """标题上下那一段里的块(不含对话框那两种说法)。"""
-    up, down = _BELL_TITLE_SPAN
-    out = []
-    for b in blocks:
-        t = b.get("text") or ""
-        if "踪迹在" in t or _RE_BELL_USE.search(t):
-            continue
-        y = b.get("y1", 0)
-        if title_y - up <= y <= title_y + down:
-            out.append(b)
-    return out
-
-
-def _bell_scope(blocks):
-    """任务追踪里会挂着好几个任务,**只认「降妖伏魔」标题下的那一段**。
-
-    别的任务(师门/抓鬼…)也有"去某某地(x,y)"的行,不圈范围就会认错。
-    对话框那两种写法(「…踪迹在X(x,y)…」「去X(x,y)使用招魂帖」)不属于任务
-    追踪,始终保留。找不到「降妖伏魔」标题时,任务追踪的行全部丢弃 ——
-    没有标题,说明这个任务根本不在追踪列表里。
-    """
-    blocks = _order([b for b in blocks if (b.get("text") or "").strip()])
-    title_y = _title_y(blocks)
-    span_ids = set()
-    if title_y is not None:
-        span_ids = {id(b) for b in _bell_span(blocks, title_y)}
-    kept = []
-    for b in blocks:
-        t = b.get("text") or ""
-        if ("踪迹在" in t or "妖魔在" in t            # 对话框/任务栏的说法
-                or _RE_BELL_USE.search(t)
-                or id(b) in span_ids):
-            kept.append(b)
-    return kept
-
-
-def scan_bell_parts(blocks, scoped=True):
-    """把这一轮文字块里"对话框说的"和"任务栏说的"分开认出来。
-
-    返回 (dialog, tracker, where):
-      dialog / tracker: (地图名, x, y)  —— 对话框开新周期,任务栏在周期内补充
-      where: 恒为 None(任务栏只写"去X找Y"、没坐标的,一律不管)
-
-    以前读**整窗**时这里还有宽窄两条口径(wide 参数:整窗那一拍只认带虚词锚点的
-    写法)。整窗那条路删了(2026-10-21,任务栏框一律来自分辨率表),剩下的都是
-    **小块读数**:小块里图名读花("建邮城"/"宝国")靠两条"没锚点"的兜底接住。
-
-    任务追踪里可能挂着别的任务:自动模式下只看「降妖伏魔」标题下的那一段;
-    对话框那条主路(scoped=False,面板里就那一条任务)不圈范围,原样认。
-    """
-    blocks = _bell_scope(blocks) if scoped else blocks
-    text = "".join((b.get("text") or "") for b in _order(blocks))
-    # 「去X(x,y)使用招魂帖/逐妖蛊虫」是**对话框**说的(招魂幡、逐妖蛊虫第一步),
-    # 跟「踪迹在…」同级。悬停行(「在X(x,y)处」)不算 —— 它是任务栏那边的
-    # 第二个坐标,归 track(`_RE_BELL_TRACK` 就认它)。
-    dialog = (_hit(text, _RE_BELL_DIALOG) or _hit(text, _RE_BELL_USE))
-    track = _hit(text, _RE_BELL_TRACK)
-    if not track:
-        track = _hit(text, _RE_BELL_KNOWN)      # 老写法兜底(没锚点但有图名+坐标)
-    if not (dialog or track):
-        # 兜底:"去建邺城(101,127)"
-        any_hit = _hit(text, _RE_BELL_ANY)
-        if any_hit:
-            dialog = any_hit
-    return dialog, track, None
-
-
-def scan_bell(blocks, scoped=True):
-    """从 OCR 文字块里找"地图名+坐标":对话框优先,任务栏作补充;都没有返回 None。"""
-    dialog, track, _where = scan_bell_parts(blocks, scoped=scoped)
-    return dialog or track
-
-
-# ---- 底图:data/maps/ 下按地图名或拼音名放图(png/jpg) ----
-MAP_DIR = os.path.join(BASE_DIR, "data", "maps")
-MAP_CALIB_PATH = os.path.join(MAP_DIR, "calib.json")
-MAP_BOUNDS_PATH = os.path.join(MAP_DIR, "bounds.json")
-MAP_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
-# 拼音名对应 24 张老图集里的文件名(只有这几张收得到)
-MAP_STEMS = {
-    "长寿村": ("changshoucun", "changshoujiaowai"),
-    "傲来国": ("aolaiguo",),
-    "朱紫国": ("zhuziguo",),
-    "建邺城": ("jianye",),
-    "西梁女国": ("xiliangnvguo",),
-    "宝象国": ("baoxiangguo",),
-}
-
-
-def map_asset(name: str):
-    """找地图底图:先按中文名找,再按拼音名找;都没有返回 None。"""
-    stems = [name] + list(MAP_STEMS.get(name, ()))
-    for stem in dict.fromkeys(stems):
-        for ext in MAP_EXTS:
-            p = os.path.join(MAP_DIR, stem + ext)
-            if os.path.exists(p):
-                return p
-    return None
-
-
-# 录入地图时用的判据(纯函数,好离线测)
-MAP_RECT_MIN, MAP_RECT_MAX = 160, 1500   # 地图矩形的边长合理区间
-MAP_RECT_FILL = 0.55                     # 连通块占自己外接框的比例(更低的是一圈描边/碎块)
-MAP_RECT_TOL = 0.03                      # 外接框长宽比与坐标范围比例的允许偏差
-MAP_RECT_TIGHT = 0.04                    # 偏差够小就不再试后面的彩色度档
-MAP_SAT_LEVELS = (35, 25, 45, 55)        # 逐级试的"彩色度"(六张图在 35 档命中最多)
-
-
-def _band(cover, frac):
-    """覆盖比例 ≥ frac 的最长连续段 -> (起点, 终点);没有返回 None。"""
-    best = None
-    start = None
-    for i, v in enumerate(cover >= frac):
-        if v:
-            if start is None:
-                start = i
-        elif start is not None:
-            if best is None or i - start > best[1] - best[0]:
-                best = (start, i - 1)
-            start = None
-    if start is not None and (best is None
-                              or len(cover) - start > best[1] - best[0]):
-        best = (start, len(cover) - 1)
-    return best
-
-
-def _components(mask, min_side, max_side):
-    """mask 里边长落在区间内的连通块 -> [(像素数, x0, y0, x1, y1)]。"""
-    import collections
-
-    import numpy as np
-    h, w = mask.shape
-    seen = np.zeros((h, w), bool)
-    out = []
-    for y in range(h):
-        if not mask[y].any():
-            continue
-        for x in range(w):
-            if not mask[y, x] or seen[y, x]:
-                continue
-            dq = collections.deque([(x, y)])
-            seen[y, x] = True
-            n = 0
-            minx = maxx = x
-            miny = maxy = y
-            while dq:
-                cx, cy = dq.popleft()
-                n += 1
-                if cx < minx:
-                    minx = cx
-                elif cx > maxx:
-                    maxx = cx
-                if cy < miny:
-                    miny = cy
-                elif cy > maxy:
-                    maxy = cy
-                for nx, ny in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1),
-                               (cx, cy - 1)):
-                    if (0 <= nx < w and 0 <= ny < h and mask[ny, nx]
-                            and not seen[ny, nx]):
-                        seen[ny, nx] = True
-                        dq.append((nx, ny))
-            bw, bh = maxx - minx + 1, maxy - miny + 1
-            if min_side <= bw <= max_side and min_side <= bh <= max_side:
-                out.append((n, minx, miny, maxx, maxy))
-    return out
-
-
-def map_ratio(name):
-    """这张地图坐标范围的长宽比(用来核对"截到的是不是它");没范围返回 None。"""
-    try:
-        min_x, min_y, max_x, max_y = [float(v)
-                                      for v in load_map_bounds().get(name)]
-    except Exception:
-        return None
-    if max_x <= min_x or max_y <= min_y:
-        return None
-    return (max_x - min_x) / (max_y - min_y)
-
-
-def find_color_blob(rgb, want_ratio=None, min_side=MAP_RECT_MIN,
-                    max_side=MAP_RECT_MAX):
-    """按"整块彩色区"找地图本体(快,六张图里五张能直接命中)。
-
-    地图窗口画的就是**一张整块的图**:某个彩色度档下它会连成一整个连通块,外接框
-    刚好是图本身(实测六张图的原始截图误差 ≤1px);窗口周围被挡住的场景要么碎成
-    小块、要么彩色度不够连不起来。
-
-    want_ratio = 这张地图坐标范围的长宽比(get 自 bounds.json)—— 给了就挑"外接框
-    比例离它最近"的那块,顺带验一下截到的确实是这张图;没给就挑面积最大的那块。
-
-    连通块的外接框有时会连上周围一小片场景(彩色度低的地图会这样),所以每块再按
-    "行/列覆盖比例"裁一次,原框和裁剪框都当候选。
-    """
-    import numpy as np
-    a = np.asarray(rgb).astype(np.int16)
-    if a.ndim != 3 or a.shape[2] < 3:
-        return None
-    sat = a.max(axis=2) - a.min(axis=2)
-    best = None
-    for th in MAP_SAT_LEVELS:
-        mask = sat > th
-        for n, minx, miny, maxx, maxy in _components(mask, min_side, max_side):
-            bw, bh = maxx - minx + 1, maxy - miny + 1
-            if n / float(bw * bh) < MAP_RECT_FILL:
-                continue
-            cands = [(minx, miny, maxx, maxy)]
-            sub = mask[miny:maxy + 1, minx:maxx + 1]
-            rb, cb = _band(sub.mean(axis=1), 0.5), _band(sub.mean(axis=0), 0.5)
-            if rb and cb:
-                x0, y0 = minx + cb[0], miny + rb[0]
-                x1, y1 = minx + cb[1], miny + rb[1]
-                trim = (x1 - x0 + 1) * (y1 - y0 + 1)
-                if (trim / float(n) >= 0.6
-                        and min_side <= x1 - x0 + 1 <= max_side
-                        and min_side <= y1 - y0 + 1 <= max_side):
-                    cands.append((x0, y0, x1, y1))
-            for box in cands:
-                bw, bh = box[2] - box[0] + 1, box[3] - box[1] + 1
-                ratio = bw / float(bh)
-                if want_ratio:
-                    err = abs(ratio / want_ratio - 1)
-                    if err > MAP_RECT_TOL:
-                        continue
-                elif not 0.5 <= ratio <= 2.5:
-                    continue
-                else:
-                    err = 0.0
-                key = (round(err, 4), -(bw * bh))
-                if best is None or key < best[0]:
-                    best = (key, box)
-        if best and best[0][0] <= MAP_RECT_TIGHT:
-            break
-    return best[1] if best else None
-
-
-# ---- 兜底:地图窗那圈深色外框(灰石头城那种彩色块法认不出来的,靠它) ----
-MAP_FRAME_DARK = 95        # 外框的"深"上限(max(RGB))
-MAP_FRAME_SAT = 70         # 外框的彩度上限(发黑的才要)
-MAP_FRAME_MIN_RUN = 120    # 框线至少这么长(min_side 的三分之二上下)
-MAP_FRAME_SIDE = 0.5       # 框线两侧至少有一侧"亮"到这个程度以下:是线不是深色块
-MAP_FRAME_TOL = 0.12       # 外框比地图本体多一圈边,长宽比会漂,所以放宽
-
-
-def _runs(mask, axis, min_run):
-    """沿 axis 逐行/逐列找"细深色段" -> [(位置, 段长, 段起, 段止)]。
-
-    细=这一段的外面至少有一侧是亮的(不是一大片深色):地图窗的描边就是这种线。
-    """
-    n = mask.shape[axis]
-    out = []
-    for i in range(n):
-        line = mask[i] if axis == 0 else mask[:, i]
-        best = cur = 0
-        start = best_s = 0
-        for j, val in enumerate(line):
-            if val:
-                if cur == 0:
-                    start = j
-                cur += 1
-                if cur > best:
-                    best, best_s = cur, start
-            else:
-                cur = 0
-        if best < min_run:
-            continue
-        s, e = best_s, best_s + best - 1
-        if axis == 0:
-            up = float(mask[i - 1, s:e + 1].mean()) if i > 0 else 0.0
-            dn = float(mask[i + 1, s:e + 1].mean()) if i + 1 < n else 0.0
-        else:
-            up = float(mask[s:e + 1, i - 1].mean()) if i > 0 else 0.0
-            dn = float(mask[s:e + 1, i + 1].mean()) if i + 1 < n else 0.0
-        if min(up, dn) < MAP_FRAME_SIDE:
-            out.append((i, best, s, e))
-    return out
-
-
-def _overlap(a, b):
-    """两个区间 [起,止] 的重叠长度。"""
-    return max(0, min(a[1], b[1]) - max(a[0], b[0]) + 1)
-
-
-def find_map_frame(rgb, want_ratio=None, min_side=MAP_RECT_MIN,
-                   max_side=MAP_RECT_MAX):
-    """按"地图窗的深色外框"找地图**窗口**,返回 (x0,y0,x1,y1);找不到 None。
-
-    外框跟地图本身配色无关(灰石头城也有),所以彩色块法认不出来的图靠它。
-    判据:上/下两条横线的**跨度基本重合**(拐角那几像素会被别的东西打断,所以
-    只要求重叠够多)、左右两条竖线同理,四条线框出的矩形边长在区间内、长宽比
-    接近 want_ratio(外框比图本体多一圈边,这里只粗筛 ±12%:真正的比例核对
-    在裁出地图本体之后)。
-    """
-    import numpy as np
-    a = np.asarray(rgb).astype(np.int16)
-    if a.ndim != 3 or a.shape[2] < 3:
-        return None
-    v = a.max(axis=2)
-    mask = (v < MAP_FRAME_DARK) & ((v - a.min(axis=2)) < MAP_FRAME_SAT)
-    rows = _runs(mask, 0, MAP_FRAME_MIN_RUN)
-    cols = _runs(mask, 1, MAP_FRAME_MIN_RUN)
-    best = None
-    for t, tl, ts0, ts1 in rows:
-        for b, bl, bs0, bs1 in rows:
-            if b <= t:
-                continue
-            bh = b - t + 1
-            if not (min_side <= bh <= max_side):
-                continue
-            if _overlap((ts0, ts1), (bs0, bs1)) < 0.85 * min(tl, bl):
-                continue                                   # 上下不是同一条窗框
-            bw_exp = (tl + bl) / 2.0
-            if not (min_side <= bw_exp <= max_side):
-                continue
-            if want_ratio and abs(bw_exp / bh / want_ratio - 1) > MAP_FRAME_TOL:
-                continue
-            for l, ll, ls0, ls1 in cols:
-                if ll < 0.9 * bh or not (t - 8 <= ls0 and ls1 <= b + 8):
-                    continue
-                for r, rl, rs0, rs1 in cols:
-                    if r <= l or rl < 0.9 * bh:
-                        continue
-                    if not (t - 8 <= rs0 and rs1 <= b + 8):
-                        continue
-                    bw = r - l + 1
-                    if abs(bw - bw_exp) > 0.05 * bw_exp:
-                        continue
-                    err = (abs(bw / float(bh) / want_ratio - 1)
-                           if want_ratio else 0.0)
-                    key = (round(err, 3), -(bw * bh))
-                    if best is None or key < best[0]:
-                        best = (key, (l, t, r, b))
-    return best[1] if best else None
-
-
-def find_map_rect(rgb, want_ratio=None, min_side=MAP_RECT_MIN,
-                  max_side=MAP_RECT_MAX):
-    """在整屏截图里找游戏地图那一块,返回 (x0,y0,x1,y1);找不到返回 None。
-
-    先按整块彩色区找(快);找不到再找地图窗的深色外框,在框内重找一次本体 ——
-    两条路是互补的:彩色块法在灰石头城(建邺城)上会失败,外框法在竖长图
-    (长寿村)上会失败,合起来六张都稳。实测(把官方的地图窗截图贴进真游戏
-    截图做的全屏模拟):六张全部命中,与地图本体差 ≤1px;没开地图的真截图全拒。
-    """
-    import numpy as np
-    rect = find_color_blob(rgb, want_ratio, min_side, max_side)
-    if rect:
-        return rect
-    frame = find_map_frame(rgb, want_ratio, min_side, max_side)
-    if not frame:
-        return None
-    x0, y0, x1, y1 = frame
-    inner = np.asarray(rgb)[y0:y1 + 1, x0:x1 + 1]
-    got = find_color_blob(inner, want_ratio, min_side, max_side)
-    if not got:
-        return None
-    return (got[0] + x0, got[1] + y0, got[2] + x0, got[3] + y0)
-
-
-# ---- 分辨率表:客户端每个尺寸下,对话框 / 任务栏在哪(相对窗口左上角) ----
-# 游戏 UI 是"固定像素"的:同一个客户端尺寸下,对话框和任务栏的大小、位置都是死的。
-# 存成**相对客户端窗口**的坐标,窗口挪了/多开都不用重设。
-# **只保留两档**(用户 2026-10-17 定的):640x480(窗口 815x680)、
-# 800x600(窗口 1011x826)。表里没有的尺寸 = 不支持,界面会弹窗让用户改分辨率。
-# 用 `python main.py --layout` 自动量当前这个尺寸的对话框框,量完写进这个文件。
-LAYOUT_PATH = os.path.join(BASE_DIR, "data", "bell_layouts.json")
-
-
-def cmd_layout(save=True) -> int:
-    """命令行:`python main.py --layout` —— 量当前客户端尺寸下**对话框那块**在哪,
-    写进分辨率表。
-
-    对话框那块要**当下开着对话框**才量得到:先把铃铛任务的对话框调出来再跑。
-    (任务栏框(`trk`)是用户在截图上框的,这里不量、也不改。)
-    """
-    out = measure_layout()
-    if not out:
-        print("没找到客户端窗口(游戏没开?或被最小化了)")
-        return 1
-    for size, row in out.items():
-        print(f"  客户端 {size}:")
-        if row.get("dlg"):
-            print(f"    对话框 dlg={row['dlg']}")
-        else:
-            print("    对话框:没看到对话框面板 —— 先把一个铃铛对话框打开再跑")
-        if save and row:
-            key, saved = save_layout(size, row.get("dlg"))
-            print(f"    已写入 {LAYOUT_PATH} 的 {key}: dlg={saved.get('dlg')}")
-    return 0
-
-
-_LAYOUT_CACHE = {"key": None, "data": {}}
-
-
-def load_layouts() -> dict:
-    """分辨率表:{"1022x809": {"dlg": [x0,y0,x1,y1]}};读不了返回 {}。
-
-    按 mtime 缓存:扫描每轮要查两次表(`fixed_dialog` 的 layout_for +
-    `check_size` 的 supported_size),没必要每轮都读盘;表被 `save_layout`
-    / `--layout` 改过时 mtime 变,下一次读自然拿到新表。
-    """
-    try:
-        key = (LAYOUT_PATH, os.path.getmtime(LAYOUT_PATH))
-    except OSError:
-        return {}
-    if _LAYOUT_CACHE["key"] != key:
-        try:
-            with open(LAYOUT_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        _LAYOUT_CACHE["key"] = key
-        _LAYOUT_CACHE["data"] = data
-    return _LAYOUT_CACHE["data"]
-
-
-# 尺寸对不上时的容差:截图里的窗口矩形和 GetWindowRect 能差几个像素(实测
-# 同一台 800x600 的客户端,截图是 1011x826、实测是 1015x829)。三个已知尺寸
-# 彼此差 200 像素以上,所以放宽到 20 也不会认错档。
-LAYOUT_TOL = 20
-
-
-def layout_row(size):
-    """这个客户端尺寸量过吗?返回表里那一行(dict)或 None(坐标都相对窗口左上角)。
-
-    表里两样:`dlg` = 对话框框;**`trk` = 任务栏框**(围着「任务追踪」表头那块)。
-
-    精确匹配先试;差 ±LAYOUT_TOL 像素也算(截图和 GetWindowRect 会差一两像素,
-    实测同一台机器上 815x680 和 815x679 都出现过)。
-    """
-    if not size:
-        return None
-    data = load_layouts()
-    w, h = int(size[0]), int(size[1])
-    row = data.get(f"{w}x{h}")
-    if not isinstance(row, dict):
-        for key, val in data.items():
-            if key.startswith("_"):
-                continue
-            try:
-                kw, kh = (int(v) for v in key.lower().split("x"))
-            except Exception:
-                continue
-            if abs(kw - w) <= LAYOUT_TOL and abs(kh - h) <= LAYOUT_TOL:
-                row = val if isinstance(val, dict) else None
-                break
-    return row if isinstance(row, dict) else None
-
-
-def supported_size(size):
-    """这个客户端尺寸降妖伏魔支持吗(表里量过的两档:815x680 / 1011x826)。
-
-    也就是游戏里的 640x480 / 800x600。1024x768 已不支持(表里那一行已删)。
-    """
-    return layout_for(size) is not None
-
-
-# 支持的两档**游戏设置口径**分辨率(对应表里的窗口 815x680 / 1011x826)。
-# 文案(日志/弹框)一律走 `supported_res_text`,别再手写死数字 —— 2026-11-05
-# 加第二档支持/改档位时只动这一个地方(抄 keju 的 supported_res_text)。
-SUPPORTED_GAME_RES = ((640, 480), (800, 600))
-
-
-def supported_res_text():
-    """「640×480 / 800×600」这样的支持档文案,日志与弹框共用一份。"""
-    return " / ".join(f"{w}×{h}" for w, h in SUPPORTED_GAME_RES)
-
-
-def min_res_text():
-    """最小支持档文案(640×480):这档截图最快、字最大,提示用户优先用。"""
-    w, h = SUPPORTED_GAME_RES[0]
-    return f"{w}×{h}"
-
-
-def res_tier_index(size):
-    """窗口尺寸按面积就近归到表里哪一档 -> 下标(0=最小档 640×480)。
-
-    只给"建议调最小档"的提示用(抄 keju 的就近归档口径);定位/识别仍走
-    `supported_size` / `layout_for` 的 ±20 容差表,两套口径别混。表里没有的
-    尺寸(不支持)返回 None。
-    """
-    if not supported_size(size):
-        return None
-    w, h = size
-    best_i = best_d = None
-    i = 0
-    for key in load_layouts():          # 键序里混着"_说明"这种非档位键,跳过不计数
-        try:
-            kw, kh = (int(v) for v in str(key).lower().split("x"))
-        except ValueError:
-            continue
-        d = abs(kw * kh - w * h)
-        if best_d is None or d < best_d:
-            best_i, best_d = i, d
-        i += 1
-    return best_i
-
-
-def layout_for(size):
-    """这个客户端尺寸的**对话框框**(相对窗口左上角)或 None。"""
-    return (layout_row(size) or {}).get("dlg") or None
-
-
-def layout_trk(size):
-    """这个客户端尺寸的**任务栏框**(相对窗口左上角)或 None。
-
-    量过的尺寸把任务栏框也写进表(用户 2026-10-17 要求):这个分辨率**只扫
-    这一块**。表里没有的尺寸返回 None —— 任务栏那支一次都不读(只支持两档
-    分辨率,两档的框都量过;2026-10-21 起不再有"现场整窗找表头"的兜底)。
-    """
-    trk = (layout_row(size) or {}).get("trk")
-    return [int(v) for v in trk] if trk and len(trk) == 4 else None
-
-
-def save_layout(size, dlg=None, trk=None):
-    """把这个尺寸量到的框写进表里(读-改-写)。size 给 (宽,高) 或 "宽x高"。"""
-    data = dict(load_layouts())          # 浅拷贝:别把缓存里的表就地改了
-    if isinstance(size, str) and "x" in size:
-        key = size
-    else:
-        key = f"{int(size[0])}x{int(size[1])}"
-    row = dict(data[key]) if isinstance(data.get(key), dict) else {}
-    row.pop("icons", None)    # 老版本写进去的"判进没进战斗"那格:功能已删,一起清
-    if dlg:
-        row["dlg"] = [int(v) for v in dlg]
-    if trk:
-        row["trk"] = [int(v) for v in trk]
-    data[key] = row
-    os.makedirs(os.path.dirname(LAYOUT_PATH), exist_ok=True)
-    with open(LAYOUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return key, row
-
-
-def measure_layout(screen=None):
-    """量当前客户端窗口里**对话框那块**在哪(相对窗口左上角)。
-
-    必须是**当下正开着对话框**才量得到(靠像素找面板)。任务栏框(`trk`)**不量**:
-    它由用户在游戏截图上框出来、`save_layout(..., trk=...)` 写进表(面板在游戏里
-    能随便拖,机器量不准;所以这里连 OCR 都不用开)。返回 {尺寸: {...}}。
+    对话框框(`fixed_dialog` 的画布×`DLG_RATIOS`)、任务栏框种框
+    (`trk_rect` 的画布×`TRK_BOXES`)和界面的分辨率提醒共用这一条。
+    画布按"矩形落在窗口里"配对(region 是顶层窗口、画布是它里面的子窗口,
+    同一进程枚举,坐标系一致);游戏分辨率由 `core.find_client_canvases`
+    按画布尺寸 ÷ 倍率算出,精确等于游戏设置的那一档;版式 "tab"/"win" 随
+    画布一起给,只用于日志/存档文件名(比例表/框表不按版式分)。
     """
     import core
-    core._dpi_aware()          # 和主程序同一套:量出来的是**物理像素**,才对得上
-    sc = screen or core.Screen()
-    out = {}
     try:
-        wins, _mini = core.find_client_windows()
-    except Exception:
-        wins = []
-    for _title, rect in wins:
-        x0, y0, x1, y1 = [int(v) for v in rect]
-        size = (x1 - x0, y1 - y0)
-        row = {}
-        band = rel_rect(rect, DIALOG_BAND)
-        try:
-            bcrop = sc.grab(band)
-            box = panel_box(bcrop)
-        except Exception:
-            box = None
-        # 量出来的框要是快盖满整条带子,那多半是"没开对话框"时把整条带子当成了
-        # 面板(暗场景会这样)—— 这种别写进表里,免得把错的坐标固化下来
-        wide = box and (box[2] - box[0]) >= 0.92 * (band[2] - band[0])
-        if box and not wide:
-            row["dlg"] = [band[0] - x0 + box[0], band[1] - y0 + box[1],
-                          band[0] - x0 + box[2], band[1] - y0 + box[3]]
-        out[f"{size[0]}x{size[1]}"] = row
-    return out
-
-
-def map_names_in(blocks, names=BELL_MAP_NAMES):
-    """画面里的文字块出现过的地图名(去重、别名归一)。
-
-    只用来核对"现在打开的是不是这张图":游戏 HUD 一直写着当前地图名,所以录那张
-    图时它一定在;任务追踪/聊天里提到别的地图名也拦得住。地图窗口里那些**邻近**
-    地图的标注(比如"解阳山""丝绸之路")不在 BELL_MAP_NAMES 里,不会被算进来。
-    """
-    found = []
-    for b in blocks:
-        text = (b.get("text") or "").strip()
-        if not text:
-            continue
-        for n in names:
-            if n in text and n not in found:
-                found.append(n)
-        for alias, canon in _BELL_CANON.items():
-            if alias in text and canon in names and canon not in found:
-                found.append(canon)
-    return found
-
-
-def map_calib(name: str):
-    """底图缩放系数:图片像素 = 坐标 * s + o。
-
-    默认 (1,1,0,0),即"底图像素 == 游戏坐标"。老图集若整体缩放过,
-    在 data/maps/calib.json 里写 {"地图名": {"sx":..,"sy":..,"ox":..,"oy":..}}。
-    """
-    try:
-        with open(MAP_CALIB_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    v = data.get(name) or {}
-    if not isinstance(v, dict):
-        v = {}
-    try:
-        return (float(v.get("sx", 1.0)) or 1.0, float(v.get("sy", 1.0)) or 1.0,
-                float(v.get("ox", 0.0)), float(v.get("oy", 0.0)))
-    except Exception:
-        return (1.0, 1.0, 0.0, 0.0)
-
-
-def map_pixel(name: str, x: int, y: int):
-    """游戏坐标 -> 底图上的像素位置(浮点)。"""
-    sx, sy, ox, oy = map_calib(name)
-    return (x * sx + ox, y * sy + oy)
-
-
-def map_asset_save_path(name, ext=".png"):
-    """游戏里采集来的底图存到 data/maps/<中文名>.png,并保证目录存在。"""
-    os.makedirs(MAP_DIR, exist_ok=True)
-    return os.path.join(MAP_DIR, name + ext)
-
-
-def save_map_calib(name, sx, sy, ox=0.0, oy=0.0):
-    """把某张地图的缩放系数写进 data/maps/calib.json(读-改-写,别覆盖别的图)。"""
-    try:
-        with open(MAP_CALIB_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
-    data[name] = {"sx": float(sx), "sy": float(sy),
-                  "ox": float(ox), "oy": float(oy)}
-    os.makedirs(MAP_DIR, exist_ok=True)
-    with open(MAP_CALIB_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def map_calib_from_bounds(w, h, bounds):
-    """底图就是整张地图时,直接按坐标范围算出标定。
-
-    bounds = [min_x, min_y, max_x, max_y]。游戏里地图原点 (0,0) 在**左下角**、
-    y 轴朝上,所以 y 方向要翻过来(用负的 sy 加偏移表示),x 方向是普通的线性。
-    返回 (sx, sy, ox, oy),范围不合法返回 None。
-    """
-    try:
-        min_x, min_y, max_x, max_y = [float(v) for v in bounds]
+        canvases, _mini = core.find_client_canvases()
     except Exception:
         return None
-    if max_x <= min_x or max_y <= min_y or w <= 0 or h <= 0:
-        return None
-    sx = w / (max_x - min_x)
-    sy = h / (max_y - min_y)
-    return (sx, -sy, -min_x * sx, max_y * sy)
-
-
-def load_map_bounds() -> dict:
-    """地图坐标范围:data/maps/bounds.json 里 {"地图名": [minx, miny, maxx, maxy]}。"""
-    try:
-        with open(MAP_BOUNDS_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def auto_calibrate_from_bounds(overwrite=False):
-    """有坐标范围的地图,自动算标定,省得挨个手点角色位置。
-
-    返回 [(地图名, 说明)]。默认只补没有标定的那些,overwrite=True 才重算。
-    """
-    from PIL import Image
-    out = []
-    bounds_all = load_map_bounds()
-    if not bounds_all:
-        return out
-    try:
-        with open(MAP_CALIB_PATH, encoding="utf-8") as f:
-            done = json.load(f)
-        done = done if isinstance(done, dict) else {}
-    except Exception:
-        done = {}
-    for name, bounds in bounds_all.items():
-        if name.startswith("_"):          # 以 _ 开头的是注释行,不是地图
-            continue
-        path = map_asset(name)
-        if not path:
-            out.append((name, "没有底图"))
-            continue
-        if not overwrite and name in done:
-            out.append((name, "已有标定,跳过"))
-            continue
-        try:
-            with Image.open(path) as im:
-                w, h = im.size
-        except Exception as err:
-            out.append((name, f"底图读不了({err})"))
-            continue
-        cal = map_calib_from_bounds(w, h, bounds)
-        if not cal:
-            out.append((name, "坐标范围不合法"))
-            continue
-        save_map_calib(name, *cal)
-        out.append((name, f"sx={cal[0]:.2f} sy={cal[1]:.2f}"))
-    return out
-
-
-class TrkMode(str, enum.Enum):
-    """任务栏那一支"读不读、读多勤"的三态(**只由对话框给**,见 `trk_plan`)。
-
-    继承 str:跟 "item" 等字符串比较/当 dict 键都照旧能用,只是写新代码时
-    不会再把 "item"/"iteam" 这类手滑拼进状态里。
-    """
-    ITEM = "item"      # 逐妖蛊虫:盯任务栏,同一个新坐标连读两次就收手
-    HOVER = "hover"    # 巧智魔/怯弱妖:鼠标压上去才出第二坐标,读到就收手
-    NONE = "none"      # 其余:任务栏一次都不读
-
+    x0, y0, x1, y1 = [int(v) for v in region]
+    for _title, res, rect, _scale, mode in canvases:
+        cx0, cy0, cx1, cy1 = (int(v) for v in rect)
+        if cx0 >= x0 and cy0 >= y0 and cx1 <= x1 and cy1 <= y1:
+            return [[cx0, cy0, cx1, cy1], (int(res[0]), int(res[1])), mode]
+    return None
 
 @dataclass
 class SlotState:
@@ -1460,6 +266,7 @@ class SlotState:
     别的键在哪儿一目了然。**字段默认值 = 以前"键不存在"时的语义**,行为一个字没改。
     """
     region: tuple = ()                  # 这个槽对应的客户端窗口矩形(物理像素)
+    res: tuple | None = None            # 里面那层游戏画面的分辨率(变了要重取任务栏框)
     # ---- 任务栏那侧 ----
     trk: list | None = None             # 任务栏框(来自分辨率表,相对窗口;None=没量到)
     trk_mode: TrkMode = TrkMode.NONE    # 本周期任务类型(只由对话框给,见 TrkMode)
@@ -1486,19 +293,19 @@ class SlotState:
     dlg_gone: float = 0.0               # 面板开始读不到的时刻(dlg_pend 的 TTL 从这儿算)
     dlg_ms: float = 0.0                 # 上次读对话框的耗时(ms),慢机器自适应间隔用
 
-
 class BellTool(threading.Thread):
     """妖魔位置监听:自己决定扫哪、自己认,位置交给界面画点。
 
     不播报语音(用户要求):认出来只写日志 + 更新界面上的点。
 
     只走**快路**(对着用户那两条红线:准、快):对话框位置是固定的(游戏把它贴在
-    窗口下方居中),先用 1ms 的"暗面板"判据挡掉绝大多数轮次,真有面板才 OCR
-    那一小块;任务栏框**来自分辨率表**(`layout_trk`,两档支持尺寸都量过),
-    只读那一小块 —— 表里没有的尺寸(不支持)任务栏那支一次都不读。
-    原来"还没框时扫整窗找表头学框 / 连着没表头就作废重锚 / 整窗找框的退避和
-    冷却"那条兜底链,2026-10-21 随"只支持两档分辨率"整套删掉了(定案见
-    data/bell_layouts.json:两档的 trk 都框好了,框不再学习、不再作废)。
+    画布下方居中,框 = 画布 × `DLG_RATIOS`),先用 1ms 的"暗面板"判据挡掉
+    绝大多数轮次,真有面板才 OCR 那一小块;任务栏框**来自 common 的
+    TRK_BOXES**(`core.trk_rect`,画布×定稿框),只读那一小块 —— 没框的档
+    任务栏那支一次都不读(2026-11-12 表刚换画布锚定,待真机重新框,期间
+    整支不读)。原来"还没框时扫整窗找表头学框 / 连着没表头就作废重锚 /
+    整窗找框的退避和冷却"那条兜底链,2026-10-21 随"只支持表里量过的档"
+    整套删掉了(框不再学习、不再作废)。
 
     过程都写进日志(bell.log 里能看到扫了哪块、多大、几毫秒、认到了什么)。
     """
@@ -1521,6 +328,10 @@ class BellTool(threading.Thread):
         self._warned_size = ""         # 日志里提醒过"这个尺寸不支持"了吗
         self._bad_size = ""            # 最近一次自动定位到的不支持尺寸(界面轮询弹窗)
         self._no_client = ""           # 扫不到客户端时说过的那句话(同样的只说一次)
+        self._client_now = ""          # 当前自动/手动接入的那台(标题,界面据此写角色名)
+        self._client_name = ""         # 上面那台的角色名
+        self._client_rect = None       # 上面那台的窗口矩形
+        self._client_lost = False      # 客户端退出/回登录页:界面据此收掉旧角色名
         self._stat = {"rounds": 0, "ocr": 0, "skip": 0, "dlg": 0,
                       "dlg_other": 0, "dlg_gate": 0}
         self._hb = 0.0                 # 上次心跳的时间
@@ -1552,6 +363,13 @@ class BellTool(threading.Thread):
         self._ts = 0.0
         self._hb = 0.0
         self._bad_size = ""
+        self._client_now = ""
+        self._client_name = ""
+        self._client_rect = None
+        self._client_lost = False
+        watch = getattr(self, "_watch", None)
+        if watch is not None:
+            watch.reset()              # 重进功能:客户端快照记忆作废
         self._stat = {"rounds": 0, "ocr": 0, "skip": 0, "dlg": 0,
                       "dlg_other": 0, "dlg_gate": 0}
 
@@ -1571,9 +389,14 @@ class BellTool(threading.Thread):
 
     # ---- 只读状态口:gui/ui 只认这个口,不摸下面的字段 ----
     def ui_state(self):
-        """界面刷新要的只读快照:当前妖魔位置、显示行、不支持的分辨率。"""
-        return {"spot": self.spot, "target": self.target,
-                "bad_size": self._bad_size}
+        """界面刷新要的只读快照:妖魔位置、显示行、不支持的分辨率、当前客户端。"""
+        return {"spot": getattr(self, "spot", None),
+                "target": getattr(self, "target", ""),
+                "bad_size": getattr(self, "_bad_size", ""),
+                "client": getattr(self, "_client_now", ""),
+                "client_name": getattr(self, "_client_name", ""),
+                "client_rect": getattr(self, "_client_rect", None),
+                "client_lost": bool(getattr(self, "_client_lost", False))}
 
     def interval(self):
         """扫描节奏:没单独配就用铃铛自己的下限;配了就夹到合法区间。
@@ -1591,36 +414,117 @@ class BellTool(threading.Thread):
     def regions(self):
         """扫描区域:**恒为一个**(降妖伏魔只管一台客户端)。
 
-        优先级:用户在列表里选过的那台 > 只枚举到一台。
-        枚举到多台又没选过时返回空 —— 界面会弹列表让用户按角色名选
-        (见 `client_choices` / `gui.on_locate_clients`)。
+        优先级:用户在列表里选过的那台 > 第一个已登录角色。登录窗(标题抠
+        不出角色名)一律不接;启动时还在登录页就返回空,登录角色后**自动
+        接入监听**(与 keju 的自动收编同口径),不用再点药丸。多开且没选过
+        时自动接第一台,点左下角药丸可切换。
 
+        启动/登录/登出/关闭/最小化/还原的判定在 `client_watch`(纯逻辑,
+        与 keju 同源可复用):这里每拍枚举一次窗口,把窗口包成快照、记日志、
+        选一台(实测一次枚举 ≈0.24ms,比截图/OCR 便宜得多,不做缓存 ——
+        缓存会让窗口挪动/换分辨率晚一拍甚至更久,2026-11-12 用户定的)。
         返回空(扫描暂停)时**说一次原因**:多开时关掉选中的那台客户端很常见,
         不说的话日志里只是"不再有新行",看起来像卡死。
         """
         import core
+
+        from client_watch import choose_one
         want = str(self.cfg("bell_client") or "")
+        snaps = self._poll_clients()
+        if snaps is None:
+            return []
+        pick, why = choose_one(snaps, want, getattr(self, "_client_now", ""),
+                               getattr(self, "_client_rect", None))
+        if pick is None:
+            if why == "gone":
+                # 正在跟的那台被关了/退出登录:扫描暂停,等用户重新选
+                # (启动时在登录页那种 `_client_now` 为空的情况走自动接入)
+                shown = core.client_name(want) or want
+                self._no_client_note(
+                    f"选定的客户端「{shown}」不在枚举结果里 —— "
+                    "扫描暂停,点左下角的药丸重新选一台")
+                self._client_lost = True
+                return []
+            self._client_now = ""
+            self._client_name = ""
+            self._client_rect = None
+            if why == "login":
+                self._no_client_note("只枚举到登录窗口 —— 登录角色后自动接入监听")
+                self._client_lost = True       # 回登录页 = 这个角色不在了
+            elif why == "minimized":
+                # 最小化:截不到画面,但客户端还在 —— 不算"退出",名字留着
+                # (还原窗口后照常继续);只说一次原因,别每拍刷
+                self._no_client_note(
+                    "客户端已最小化 —— 截不到画面,扫描暂停(还原窗口后自动继续)")
+                self._client_lost = False
+            else:
+                self._no_client_note("没枚举到客户端窗口(游戏没开或退出了) —— 扫描暂停")
+                self._client_lost = True
+            return []
+        title, box = pick.title, pick.box
+        name = pick.name
+        # 同一窗口标题变了(多标签版切标签/换角色):继续跟,不写"自动接入"
+        # (Tracker 已经记了一条「换成了…」),配置由界面轮询跟着改
+        matched_want = why == "renamed" or (
+            bool(want) and (title == want or name == want))
+        rect = [int(v) for v in box]
+        if title != getattr(self, "_client_now", ""):
+            if want and not matched_want:
+                self.app.log(f"[{TAG}]登录角色后自动接入「{name}」")
+            elif not want:
+                logged = [c for c in snaps if c.logged and not c.minimized]
+                if len(logged) == 1:
+                    self.app.log(f"[{TAG}]检测到已登录客户端「{name}」,自动接入监听")
+                else:
+                    self.app.log(f"[{TAG}]检测到 {len(logged)} 个已登录客户端,"
+                                 f"自动接入第一台「{name}」(点左下角药丸可切换)")
+        self._no_client_note("")
+        self._client_lost = False
+        self._client_now = title
+        self._client_name = name
+        self._client_rect = rect
+        return [rect]
+
+    def _log_client_event(self, ev):
+        """把 `client_watch` 的变化挑要落日志的写进 bell.log。
+
+        只写**靠扫描暂停那句看不出来**的:登出、换角色、还原。启动/新登录/
+        挪窗/换档各有各的去处(接入日志、check_size 提醒),关闭和最小化由
+        暂停原因那句说一次 —— 别再重复刷屏。
+        """
+        if ev.kind == "logout":
+            if ev.client.logged:
+                # 同一窗口里换了角色(真换角色,或多标签版点了另一个标签):
+                # 新角色已经在了,应用会按选择策略接下去 —— 别再说"已退出
+                # 登录"(切标签并没有登出),一条中性日志够看
+                self.app.log(
+                    f"[{TAG}]当前角色换成「{ev.client.name}」(原「{ev.old.name}」)")
+            else:
+                self.app.log(f"[{TAG}]{ev.note} —— 登录角色后自动接入监听")
+        elif ev.kind == "restored":
+            self.app.log(f"[{TAG}]{ev.note}")
+
+    def _poll_clients(self):
+        """枚举一次客户端窗口:刷新快照 + 记登录/登出/换角色事件。
+
+        返回快照列表;枚举失败返回 None(调用方当"这拍不扫")。**每拍都查**
+        (实测一次 ≈0.24ms,比截图/OCR 便宜得多);不做缓存 —— 窗口挪动/
+        换分辨率要当拍跟上(2026-11-12 用户定的)。
+        """
+        import core
+
+        from client_watch import Tracker, snapshot
         try:
-            found, _mini = core.find_client_windows()
+            found, mini = core.find_client_windows()
         except Exception:
-            return []
-        if len(found) == 1:
-            self._no_client_note("")
-            return [[int(v) for v in found[0][1]]]
-        if not found:
-            self._no_client_note("没枚举到客户端窗口(游戏没开或最小化了?) —— 扫描暂停")
-            return []
-        if not want:
-            self._no_client_note("枚举到多台客户端但还没选 —— 点小窗右下角的 ↻ 选一台")
-            return []
-        for title, box in found:
-            if title == want or client_name(title) == want:
-                self._no_client_note("")
-                return [[int(v) for v in box]]
-        self._no_client_note(
-            f"选定的客户端「{client_name(want) or want}」不在枚举结果里 —— "
-            "扫描暂停,点小窗右下角的 ↻ 重新选一台")
-        return []
+            return None
+        snaps = snapshot(found, mini, core.client_name)
+        watch = getattr(self, "_watch", None)
+        if watch is None:
+            watch = self._watch = Tracker()
+        for ev in watch.poll(snaps):
+            self._log_client_event(ev)
+        return snaps
 
     def _no_client_note(self, msg):
         """扫不到客户端时只说一次(每个 tick 都打就是刷屏)。"""
@@ -1630,52 +534,64 @@ class BellTool(threading.Thread):
         if msg:
             self.app.log(f"[{TAG}]{msg}")
 
-    def layout(self, region):
-        """这个客户端尺寸量过的**对话框框**(相对窗口左上角);不支持返回 None。
-
-        表里还带任务栏框(`trk`),由 `layout_trk` 单独读。
-        """
-        return layout_for((region[2] - region[0], region[3] - region[1]))
-
     def check_size(self, size):
-        """自动定位到的客户端尺寸支持吗?不支持就记下来(界面轮询会弹窗)。
+        """游戏设置分辨率(画布口径)支持吗?不支持记下来(界面轮询给药丸红字提示)。
 
-        只支持 640x480 / 800x600 两档客户端(实测窗口 815x680 / 1011x826)。
-        返回 True = 支持。
+        三档:640x480 / 800x600 / 1024x768(2026-11-12 用户定的,1024 与
+        keju 对齐重新加入),**按游戏设置分辨率精确判** —— 窗口尺寸/显示
+        缩放都不参与(同一个游戏分辨率在不同缩放下窗口差一截,老的"窗口
+        尺寸±8 容差"口径在这里错档)。返回 True = 支持。
         """
         w, h = int(size[0]), int(size[1])
-        if supported_size((w, h)):
+        import core
+        if core.supported_res((w, h)):
+            if getattr(self, "_bad_size", ""):
+                # 从不支持改回支持档:说一声「继续识别」(keju 那边是"自动纳入
+                # 观测";单客户端这里本来就一直在跟,只是恢复读数)
+                log = getattr(getattr(self, "app", None), "log", None)
+                if log:
+                    log(f"[{TAG}]游戏分辨率已恢复到支持档 {w}×{h},继续识别")
             self._bad_size = ""
             return True
         self._bad_size = f"{w}x{h}"
         return False
 
-    def fixed_dialog(self, region):
-        """分辨率表里这个尺寸的对话框框(绝对坐标);不支持返回 None 并提醒一次。"""
-        dlg = self.layout(region)
-        size = (region[2] - region[0], region[3] - region[1])
-        if dlg:
-            self.check_size(size)
-            return abs_rect(region, dlg)
-        if not self.check_size(size):
-            label = f"{size[0]}x{size[1]}"
+    def fixed_dialog(self, region, found=None):
+        """对话框框 = **游戏画面 × 定稿比例**(绝对坐标);拿不到画布/档位返回 None。
+
+        `found` 是这一拍已经查好的 `canvas_res_of(region)`(不给就现查)—— 扫描
+        一拍只枚举一次窗口,任务栏框和对话框框共用同一份画布。
+
+        比例按**游戏设置分辨率**分档(`DLG_RATIOS`,三档 2026-11-08/11-12 定稿,
+        两种版式共用);画布物理像素 = 游戏分辨率 × 显示器倍率,所以同一档比例
+        在任何缩放下都贴。不支持的分辨率提醒一次(界面轮询靠 `_bad_size`
+        弹窗);支持但比例还没量的档位也整支不读、只说一次(见下)。
+        """
+        if found is None:
+            found = canvas_res_of(region)
+        if not found:
+            return None
+        import core
+        canvas, res, mode = found
+        if not self.check_size(res):
+            label = f"{res[0]}x{res[1]}"
             if getattr(self, "_warned_size", "") != label:
                 self._warned_size = label
-                self.app.log(f"[{TAG}]客户端尺寸 {label} 不支持 —— 只支持 "
-                             f"{supported_res_text()} 两档分辨率,请在游戏设置里改一下")
-        return None
-
-    def dialog_rect(self, region):
-        """对话框要扫的那块:**分辨率表 > 按窗口比例猜**(不支持的分辨率兜底)。
-
-        表里的坐标是相对客户端窗口左上角的 —— 客户端挪了/改大小都不用重设。
-        """
-        # 自动枚举出来的永远是"整个客户端窗口",所以对话框一律查表/按比例
-
-        dlg = self.layout(region)
-        if dlg:
-            return abs_rect(region, dlg)
-        return rel_rect(region, DIALOG_BAND)
+                # 措辞与 keju 的 _log_unsupported 同口径:尺寸 + 已跳过 + 支持档
+                self.app.log(f"[{TAG}]游戏分辨率 {label} 不支持,已跳过 —— 只支持 "
+                             f"{core.supported_res_text()}(请在游戏设置里改一下)")
+            return None
+        if res not in core.DLG_RATIOS:
+            # 支持但档位比例还没量(现三档都有,2026-11-12):没有比例就没有
+            # 框,整支不读 —— 和"没有比例兜底"同一条口径。只说一次;量完往
+            # client_common 的 DLG_RATIOS 补一行就自动恢复。
+            label = f"{res[0]}x{res[1]}"
+            if getattr(self, "_warned_ratio", "") != label:
+                self._warned_ratio = label
+                self.app.log(f"[{TAG}]游戏分辨率 {label} 的对话框比例还没量 —— "
+                             "这一档暂不识别,重新画框定稿后自动恢复")
+            return None
+        return core.dialog_rect(canvas, res)
 
     def locate(self):
         """重新枚举客户端窗口(只是记条日志;扫描永远按窗口实时来)。"""
@@ -1791,6 +707,14 @@ class BellTool(threading.Thread):
         这一拍**任务栏那一支整支跳过**(理由见那一段的注释)。
         """
         st = self._slot.get(slot)
+        # 画布/分辨率这一拍现查:窗口挪了/改档了,裁剪坐标必须当拍跟上
+        _c = canvas_res_of(region)
+        if _c is None:
+            # 这一拍没画布(登录窗 / 最小化 / 窗口刚挪还没摆稳):**整拍不读**
+            # —— 任务栏那支也不能按表框去截,否则会读到别处的内容。
+            self._stat["skip"] += 1
+            return False
+        _res = (int(_c[1][0]), int(_c[1][1]))
         if st is None or st.region != tuple(region):
             # 区域变了(窗口被拖动 / 换了客户端):换一份扫描状态。
             # 顺带把"这个槽当前的目标"也清掉(2026-10-16 检视发现):不清的话,
@@ -1798,11 +722,12 @@ class BellTool(threading.Thread):
             # **`_last`(同一条不重复报)留着**:拖动窗口时每拍都会走这条路,
             # 清了它就会每拍重报同一条(刷屏);它也只是"同值不重报",不挡新目标。
             self._cycle.pop(slot, None)
-            # 任务栏框**一律来自分辨率表**(用户 2026-10-17 定的"这个尺寸只扫
-            # 这里";2026-10-21 起表里没有的尺寸不读任务栏 —— 只支持两档,
-            # 两档的框都量过,不存在"现场找"这条路了)。
-            _trk_seed = layout_trk((region[2] - region[0],
-                                    region[3] - region[1]))
+            # 任务栏框**来自 common 的 TRK_BOXES**(`core.trk_rect`,画布×占画比;
+            # 用户 2026-11-12 定的进 client_common 与 keju 共用 —— 任务面板画在
+            # 游戏画面哪里是游戏属性。按**游戏设置分辨率**分档、两版式共用,
+            # 三档都有(2026-11-12 定稿);查不到的档任务栏那支不读,没有
+            # 兜底 —— 不存在"现场找"这条路了)。
+            _trk_seed = trk_seed_rel(region, _c)
             # **任务栏那侧的"盯"不作废**(2026-10-24 真机抓到的):逐妖蛊虫的
             # 第二个坐标多半在对话框关掉之后才刷出来,这几十秒里窗口挪一像素
             # 就把整份状态换新、trk_mode 抹回 none —— 等新坐标的循环悄悄死掉,
@@ -1812,7 +737,7 @@ class BellTool(threading.Thread):
             # 照旧换新 —— trk_ts/trk_psig 归零,换新后第一拍立刻重读一次;
             # 换客户端的话,下一张对话框开新周期会重新定类型。
             _old = st
-            st = SlotState(region=tuple(region), trk=_trk_seed)
+            st = SlotState(region=tuple(region), res=_res, trk=_trk_seed)
             if _old is not None:
                 st.trk_mode = _old.trk_mode
                 st.trk_gap = _old.trk_gap
@@ -1826,42 +751,62 @@ class BellTool(threading.Thread):
                 self.app.log(f"[{TAG}]任务栏框用表里量的那格 "
                              f"{tuple(_trk_seed)}(这个尺寸只扫这里)")
             self._slot[slot] = st
+        elif _res is not None and st.res != _res:
+            # **游戏里换了分辨率**(窗口矩形往往一像素都不动,不能等它变):
+            # 任务栏框是按游戏分辨率分档取的,留着旧档的框会去读错位置/读不到。
+            # 按新档重取,签名/时刻归零让下一拍立刻重读;"盯什么、读到过什么"
+            # (trk_mode/gap/hist/text/last/stale/pub/miss)原样带过去 —— 和窗口
+            # 挪动那份同一个理由(2026-10-24:别让等第二坐标的循环悄悄死掉)。
+            st.res = _res
+            st.trk = trk_seed_rel(region, _c)
+            st.trk_ts = 0.0
+            st.trk_psig = None
+            label = f"{_res[0]}x{_res[1]}"
+            self.app.log(f"[{TAG}]游戏分辨率变成 {label},"
+                         + (f"任务栏框已按新档重取 {tuple(st.trk)}" if st.trk
+                            else "这一档没有任务栏框,任务栏那支不读"))
         dialog = track = None
         panel_gone = False      # 这一拍连面板都没判出来(而不是"有面板但没读出坐标")
 
         # ---- 快路 1:对话框(位置固定) ----
-        # 量过分辨率的客户端:位置是死的(用户实测:所有对话框都在那一块),
-        # 直接按表裁、只拿"这块地方够不够暗"当"现在有没有对话框"的判据 ——
-        # 不用 panel_box 去猜(暗场景里它会跟身后的暗区糊成一片,实测分不开)。
-        fixed = self.fixed_dialog(region)
-        crop = self._grab(screen, fixed or self.dialog_rect(region), "对话框")
+        # 框 = 游戏画面(WSGAME 画布)× 定稿比例(`DLG_RATIOS`,按游戏设置
+        # 分辨率分档,两版式共用):
+        # 位置是死的,直接按框裁、只拿"这块地方够不够暗"当"现在有没有对话框"的
+        # 判据 —— 不用 panel_box 去猜(暗场景里它会跟身后的暗区糊成一片,实测分不开)。
+        # **没有比例兜底**(2026-11-08 用户定的):分辨率现在能精确拿到,拿不到
+        # 精确档(画布没配到 / 游戏分辨率不支持)就整拍不识别 —— 不支持的档
+        # `fixed_dialog` 里已经提醒过一次,这里不再说话。
+        fixed = self.fixed_dialog(region, _c)
+        crop = self._grab(screen, fixed, "对话框") if fixed else None
         if crop is not None:
-            if fixed:
-                # 位置是死的(表里量的那块是最宽的那种对话框,是个**上界**):
-                # 先在框里按像素收紧到实际面板 —— 窄一点的对话框(纯文字那种)
-                # 就不会把左边那片游戏世界一起读进来;收不出来(暗场景糊成一片)
-                # 就整块当面板用,宁可多读也不漏字。
-                # **滞回**:已经在"有面板"状态时用低 0.05 的线,别让暗比在阈值边上
-                # 抖一下就把面板判没了(2026-10-17 实测:第二遍重扫撞上 0.59 vs 0.60,
-                # 新坐标就这么丢了)。
-                # 暗掩码同一拍只算一次:panel_frac 要它,panel_box 的两道暗比
-                # 门槛也要它 —— 原来面板开着时一轮算三遍(每遍 13~20ms),现在一遍。
-                _dark = _dark_of(crop)
-                _pf = 0.0 if _dark is None else float(_dark.mean())
-                _thr = (DIALOG_DARK_FRAC - 0.05 if st.dlg_on
-                        else DIALOG_DARK_FRAC)
-                # 暗比先算、过了门槛才去找面板框(panel_box 是门控里最贵的一步);
-                # 没面板的轮次(绝大多数)整步省掉,一拍少 4~5ms
-                tight = panel_box(crop, dark=_dark) if _pf >= _thr else None
+            # 定稿比例框是最宽的那种对话框,是个**上界**:先在框里按像素收紧到
+            # 实际面板 —— 窄一点的对话框(纯文字那种)就不会把左边那片游戏世界
+            # 一起读进来;收不出来(暗场景糊成一片)就整块当面板用,宁可多读也不漏字。
+            # **滞回**:已经在"有面板"状态时用低 0.05 的线,别让暗比在阈值边上
+            # 抖一下就把面板判没了(2026-10-17 实测:第二遍重扫撞上 0.59 vs 0.60,
+            # 新坐标就这么丢了)。
+            # 暗掩码同一拍只算一次:panel_frac 要它,panel_box 的两道暗比
+            # 门槛也要它 —— 原来面板开着时一轮算三遍(每遍 13~20ms),现在一遍。
+            _dark = _dark_of(crop)
+            _pf = 0.0 if _dark is None else float(_dark.mean())
+            _thr = (DIALOG_DARK_FRAC - 0.05 if st.dlg_on
+                    else DIALOG_DARK_FRAC)
+            # 暗比先算、过了门槛才去找面板框(panel_box 是门控里最贵的一步);
+            # 没面板的轮次(绝大多数)整步省掉,一拍少 4~5ms
+            flat_hit = False
+            if _pf >= _thr:
+                tight = panel_box(crop, dark=_dark)
                 if tight:
                     box = tight
-                elif _pf >= _thr:
-                    box = (0, 0, crop.shape[1], crop.shape[0])
                 else:
-                    box = None
+                    box = (0, 0, crop.shape[1], crop.shape[0])
             else:
-                box = panel_box(crop)
-                _pf = panel_frac(crop)      # 不支持的分辨率(兜底路):照旧现算
+                # 暗比不够(游戏里换成了**浅色对话框皮肤**):按**结构锚点**
+                # 再判一次 —— 一整块低频平坦的横条(空白区)+ 上面 2~3 排文字行,
+                # 跟配色无关(2026-11-12 用户提的口径)。真机实测:浅色面板的
+                # 空白带 92px、行平坦度 0.8+,同尺寸世界段全部 <0.5。
+                box = flat_panel_box(crop)
+                flat_hit = box is not None
             on = box is not None
             if on != st.dlg_on:
                 st.dlg_on = on
@@ -1870,7 +815,7 @@ class BellTool(threading.Thread):
                 # 查问题时 `bell.log` 里照样有。
                 self.app.log(f"[{TAG}]对话框面板"
                              f"{'出现' if on else '消失'}"
-                             f"(暗比 {_pf:.2f})")
+                             f"(暗比 {_pf:.2f}{',结构' if flat_hit else ''})")
             if box:
                 self._stat["dlg"] += 1
                 # 面板里的内容一变(点 NPC 翻页)就马上重读;没变才按 DIALOG_GAP
@@ -1985,6 +930,23 @@ class BellTool(threading.Thread):
                                 self._note("公告原文", _raw[:120], now,
                                            base="公告对话框只认出怪名、没坐标 —— "
                                                 "原文: ")
+                                # **巧智魔/怯弱妖被遮住时转盯悬停**(2026-11-07 真机:
+                                # 藏宝阁广告横幅/「打坐」弹窗正好盖在「踪迹在X(x,y)」
+                                # 那一行上,整轮只读出怪名 —— 当天 8 次这种乱码,对应
+                                # 的怪在发布列表里一只都没出现,用户:"第一坐标经常没
+                                # 识别到")。被盖住的字谁也读不出来,但这两类的行进坐标
+                                # 本来就靠鼠标悬停任务栏那行「在X(x,y)处」(玩家必然去
+                                # 悬停拿第二坐标),对话框没给坐标就让悬停那行顶上。
+                                # **不动正在盯的周期**(item 档盯到一半,不许被一次读花
+                                # 改道);迷幻妖/梦魇魔没有悬停行,只能等下一只。
+                                if (st.trk_mode == TrkMode.NONE
+                                        and any(w in _raw for w in TYPE_HOVER)):
+                                    st.trk_mode = TrkMode.HOVER
+                                    st.trk_gap = watch_gap(st.trk_mode)
+                                    self.app.log(
+                                        f"[{TAG}]对话框的坐标行被广告/弹窗盖住了,"
+                                        "只认出怪名 —— 这个周期改盯任务栏悬停坐标"
+                                        "(鼠标压到任务栏上,读「在X(x,y)处」那行)")
                         # 框和签名**一起**记:下一轮拿这个框算签名,形状才不会变
                         st.dlg_rect = box
                         st.dlg_psig = panel_sig(crop, box)

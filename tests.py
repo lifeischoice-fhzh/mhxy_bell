@@ -22,6 +22,7 @@ import numpy as np
 import core
 import gui
 from tools import bell as tools_bell
+from tools import maps as tools_maps     # 底图/标定:补丁打在这里
 from ui import bell as ui_bell         # 小窗/侧边栏(测版面用)
 from ui import widgets as ui_widgets   # 窗口摆位/动效
 
@@ -160,17 +161,24 @@ class FakeScreen:
         return self.crops[i]
 
 
-def panel_screen(w=1000, h=880):
-    """合成一张"客户端画面":DIALOG_BAND 那一块铺一块"暗且不彩"的宽面板。
+def _ratio_box(gw=640, gh=480):
+    """画布搁在 (0,0) 时,该分辨率下的定稿对话框框(合成图给面板用)。"""
+    rl, rt, rr, rb = core.DLG_RATIOS[(gw, gh)]
+    return [int(gw * rl), int(gh * rt), int(gw * rr), int(gh * rb)]
 
-    对话框只认**面板带那条主路**(`panel_box` / `panel_frac` 按像素判"现在有没有
-    对话框"),平色亮图给不出面板 —— 主路在它上面永远判不出对话框,要验"对话框
-    说的值走主路",假屏就得真有一块面板。面板里画几行亮色"字"(占的面积很小,
-    不影响"框里暗比")。返回 RGB (H,W,3),按区域裁由调用方自己来。
+
+def panel_screen(w=1000, h=880):
+    """合成一张"客户端画面":**定稿对话框框**(画布 640×480 搁在原点 × DLG_RATIOS)
+    那一块铺一块"暗且不彩"的面板。
+
+    对话框只认**定稿框那条主路**(`fixed_dialog` 的画布×比例裁剪 → `panel_box`
+    → `panel_text_cut`),平色亮图给不出面板 —— 主路在它上面永远判不出对话框,
+    要验"对话框说的值走主路",假屏就得真有一块面板。面板里画几行亮色"字"(占的
+    面积很小,不影响"框里暗比")。返回 RGB (H,W,3),按区域裁由调用方自己来。
     """
     img = np.zeros((h, w, 3), np.uint8)
     img[:] = (200, 120, 60)                  # 亮且彩的"游戏世界"
-    x0, y0, x1, y1 = tools_bell.rel_rect([0, 0, w, h], tools_bell.DIALOG_BAND)
+    x0, y0, x1, y1 = _ratio_box()
     img[y0:y1, x0:x1] = 32                   # 半透明黑面板那种"暗且不彩"
     for i in range(3):
         yy = y0 + 30 + i * 45
@@ -356,13 +364,10 @@ def sec_bell():
     check("铃铛:对话框主路(scoped=False)时不要求有标题",
           tools_bell.scan_bell([only_line], scoped=False) == ("西梁女国", 28, 42)
           and tools_bell.scan_bell([only_line]) is None)
-    # 只支持两档客户端尺寸(1024x768 已不支持):表里没有的尺寸要能被判出来,
-    # gui 靠这个弹"改分辨率"的提醒。
-    check("铃铛:只支持 640x480 / 800x600 两档(1024x768 已不支持)",
-          tools_bell.supported_size((815, 680))
-          and tools_bell.supported_size((1011, 826))
-          and not tools_bell.supported_size((1291, 1025))
-          and tools_bell.layout_for((1291, 1025)) is None)
+    # 分辨率支持现在按**游戏设置分辨率**精确判(core.supported_res,画布口径),
+    # 老的窗口尺寸表(supported_size/layout_for)已随 bell_layouts.json 退役
+    # (2026-11-12,trk 进 client_common.TRK_BOXES 占画比);gui 靠它弹"改
+    # 分辨率"的提醒,这里钉住三档的判定。
 
     # OCR 认错字(实测把"建邺城"读成"建邮城",整条提示就废了):常见错法都归一
     check("铃铛:OCR 认错的地图名也能认(建邮城/西粱/宝像/敖来/长寿郊外)",
@@ -396,10 +401,10 @@ def sec_bell():
     # 用**逐妖蛊虫**那种周期验任务栏(用户定的规矩:只有逐妖蛊虫/巧智魔/怯弱妖
     # 这几种才读任务栏;招魂幡/梦魇魔/迷幻妖 的坐标对话框里就有,一次都不读)
     #
-    # 假屏得给得出"面板":对话框说的值只走**面板带那条主路**(tools/bell.py 的
-    # `dialog_rect` → `panel_box` → `panel_text_cut`),平色图判不出面板,主路就
-    # 永远读不到对话框;假 OCR 也按裁剪尺寸分派 —— 宽而矮的那条是对话框的文字带,
-    # 其余(任务栏那块)是任务栏。对话框内容和任务栏内容分开摆:一个周期里
+    # 假屏得给得出"面板":对话框说的值只走**定稿框那条主路**(tools/bell.py 的
+    # `fixed_dialog` 画布×比例裁剪 → `panel_box` → `panel_text_cut`),平色图判不出
+    # 面板,主路就永远读不到对话框;假 OCR 也按裁剪尺寸分派 —— 宽而矮的那条是对话框
+    # 的文字带,其余(任务栏那块)是任务栏。对话框内容和任务栏内容分开摆:一个周期里
     # 变的是哪一个,用例里就改哪一个。
     _KW, _KH = 900, 640
     _kst = {"dlg": [blk("去宝象国(24,51)使用逐妖蛊虫,然后妖魔就会出现。",
@@ -418,10 +423,14 @@ def sec_bell():
     eng_k.bell_tool.regions = lambda: [[0, 0, _KW, _KH]]
     eng_k.screen = PanelShot(_KW, _KH)
     eng_k.ocr.recognize_blocks = _ocr_k
+    # 对话框框 = 画布 × 定稿比例(2026-11-08):配一块 640×480 的画布在窗口里,
+    # PanelShot 的面板就画在那个定稿框上(见 panel_screen)
+    core.find_client_canvases = lambda: ([
+        ("梦幻西游 ONLINE", (640, 480), [0, 0, 640, 480], 1.0, "tab")], [])
     # 任务栏框来自分辨率表(900x640 不在表里):直接种一个框进去,后面"任务栏
     # 给出新坐标"那条用例才读得到任务栏。
     eng_k.bell_tool._slot[1] = tools_bell.SlotState(
-        region=(0, 0, _KW, _KH), trk=[620, 193, 880, 390])
+        region=(0, 0, _KW, _KH), res=(640, 480), trk=[620, 193, 880, 390])
     eng_k._safe("cycle", True)
     check("周期:对话框给图+坐标 -> 直接定目标",
           eng_k.bell_tool.spot == ("宝象国", 24, 51)
@@ -602,6 +611,7 @@ def sec_bell():
                 base.astype(np.int16)
                 + rng.integers(-8, 8, (h, w, 3)), 0, 255).astype(np.uint8)
             self.dialog = False
+            self.light = False               # 浅色对话框皮肤(羊皮纸底,暗比 0)
             self.page = 1
             self.flap = False                # 面板闪一下时"字"多两行(签名跟着变)
             self.trkpanel = False            # 任务栏那块画成"深底+一行字"(签名用例)
@@ -611,12 +621,21 @@ def sec_bell():
         def image(self):
             img = self.base.copy()
             if self.dialog:
-                x0, y0, x1, y1 = tools_bell.rel_rect(
-                    self.rect, tools_bell.DIALOG_BAND)
-                img[y0:y1, x0:x1] = 32          # 半透明黑面板那种"暗且不彩"
-                for i in range(2 * self.page + (2 if self.flap else 0)):
-                    yy = y0 + 30 + i * 45       # 面板里画几行"字"
-                    img[yy:yy + 16, x0 + 60:x1 - 60] = 230
+                x0, y0, x1, y1 = _DLG           # 画布×定稿比例的框(见下面的 _DLG)
+                if self.light:
+                    # 浅色皮肤:羊皮纸底 + 深色字,暗比≈0(结构锚点才认得出)。
+                    # 字要**有间隙**(真字的笔画是断开的;整行实心横向就没有起伏,
+                    # 结构锚点会把它当空白 —— 真机不会这样)
+                    img[y0:y1, x0:x1] = (150, 190, 215)
+                    for i in range(2 * self.page + (2 if self.flap else 0)):
+                        yy = y0 + 30 + i * 45
+                        for x in range(x0 + 60, x1 - 60, 13):
+                            img[yy:yy + 16, x:x + 8] = 40
+                else:
+                    img[y0:y1, x0:x1] = 32      # 半透明黑面板那种"暗且不彩"
+                    for i in range(2 * self.page + (2 if self.flap else 0)):
+                        yy = y0 + 30 + i * 45   # 面板里画几行"字"
+                        img[yy:yy + 16, x0 + 60:x1 - 60] = 230
             if self.trkpanel:                    # 任务栏那块:深底 + 一行亮字
                 tx0, ty0, tx1, ty1 = 620, 193, 880, 390
                 img[ty0:ty1, tx0:tx1] = 32
@@ -631,8 +650,14 @@ def sec_bell():
             return np.ascontiguousarray(img[y0:y1, x0:x1][:, :, ::-1])
 
     win = Win()
-    band = tools_bell.rel_rect(win.rect, tools_bell.DIALOG_BAND)
-    part_h = band[3] - band[1]          # 面板框 = 整条带子(合成图就这样)
+    # 对话框框 = 画布 × 定稿比例(2026-11-08):桩里的画布是 [0,0,640,480]
+    # (见下面 find_client_canvases 的桩),框 = [51,230,599,406],合成图的面板
+    # 就画在这(见 Win.image / panel_screen)
+    _r640 = core.DLG_RATIOS[(640, 480)]
+    _DLG = [int(640 * _r640[0]), int(480 * _r640[1]),
+            int(640 * _r640[2]), int(480 * _r640[3])]
+    band = list(_DLG)
+    part_h = band[3] - band[1]          # 面板框 = 整个定稿框(合成图就这样)
     HDR = {"text": "任务追踪", "x1": 700, "y1": 170, "x2": 790, "y2": 190}
     TITLE = {"text": "降妖伏魔", "x1": 700, "y1": 200, "x2": 780, "y2": 220}
     DLG_BLK = blk("去西梁女国(28,42)使用逐妖蛊虫,然后妖魔就会出现。",
@@ -653,7 +678,8 @@ def sec_bell():
         对话框决定"那组)。`mode` 默认 "item":等价于"对话框已经说过这轮是逐妖蛊虫"。
         """
         return tools_bell.SlotState(
-            region=tuple(region), trk=(list(trk) if trk else None),
+            region=tuple(region), res=(640, 480),
+            trk=(list(trk) if trk else None),
             trk_mode=tools_bell.TrkMode(mode))
 
     # 对话框那边现在只读"面板里有字的那一截"(宽、矮),所以按宽高区分两类
@@ -676,7 +702,12 @@ def sec_bell():
                                "active_tool": "bell"}),
         logs=[], log=lambda m, **kw: app_f.logs.append(m))
     core.find_client_windows = lambda w=win.w, h=win.h: (
-        [("梦幻西游 ONLINE", [0, 0, w, h])], [])
+        [("梦幻西游 ONLINE - (测试区[测试服] - 测试′[1])", [0, 0, w, h])], [])
+    # 画布枚举一并打桩:合成画布 640×480 搁在窗口左上角 —— 对话框框 = 画布 ×
+    # DLG_RATIOS(2026-11-08 定稿),合成图的面板就画在那个框上(见 _DLG);
+    # 钉死它免得真机上跑测试撞上真游戏窗口
+    core.find_client_canvases = lambda: ([
+        ("梦幻西游 ONLINE", (640, 480), [0, 0, 640, 480], 1.0, "tab")], [])
     tool_f = tools_bell.BellTool(
         app_f, lambda: win,
         lambda: types.SimpleNamespace(recognize_blocks=ocr_of))
@@ -757,11 +788,33 @@ def sec_bell():
           tool_f.ui_state()["spot"] == ("傲来国", 11, 22)
           and [c for c in calls if c[0] > 500 and c[1] != win.h],
           f"{tool_f.ui_state()['spot']} 扫了{calls}")
+
+    # 浅色对话框皮肤(羊皮纸底,暗比≈0):暗比门控拦不住,靠**结构锚点**认 ——
+    # 上面 2~3 排字、下面一大片空白,跟配色无关(2026-11-12 用户提的口径)。
+    win.light = True
+    win.page = 1
+    tool_f._slot[1] = seed_state(win.rect, trk=_BOX)
+    calls.clear()
+    tool_f._ts = 0.0
+    tool_f.tick(force=False)
+    check("对话框:浅色皮肤(暗比≈0)也认得出来(结构锚点兜底)",
+          tool_f._slot[1].dlg_on is True
+          and tool_f.ui_state()["spot"] == ("西梁女国", 28, 42)
+          and [c for c in calls if c[0] > 500 and c[1] != win.h],
+          f"dlg_on={tool_f._slot[1].dlg_on} "
+          f"spot={tool_f.ui_state()['spot']} 扫了{calls}")
+    win.light = False
+    win.page = 1                              # 跟上面浅色那拍读到的目标保持一致
+    # 先把 pending 清掉:这条用例读到的目标是新的,别让"重扫那一拍"吃掉后面
+    # 悬停用例的 tick(again 那一拍**任务栏整支跳过**)
+    tool_f._slot[1].dlg_pend = None
     # 鼠标挪到面板**边上**(没压进框里)也要触发悬停那条快路:真机上玩家就是把
     # 鼠标挪到面板文字行上,原来"必须压在框里"太严,实测漏了好几次
-    tools_bell.cursor_pos = lambda: (950, 300)     # 框是 (682,182,,-362) 右边一点
-    # 距上次读 0.6 秒(逐妖蛊虫盯着第二个坐标是 0.5s 一拍):该读了
-    tool_f._slot[1].trk_ts = time.time() - 0.6
+    tools_bell.cursor_pos = lambda: (950, 300)     # 框 [530,103,970,480](±90)右边一点
+    # 距上次读 2.5 秒(超过 item 档发布后的签名兜底节奏 2.0s):该读了 ——
+    # 定稿框和任务栏框不再重叠,面板像素不会再"漏"进任务栏裁剪里扰动签名,
+    # 这条用例靠真正的定时到点触发(2026-11-08)
+    tool_f._slot[1].trk_ts = time.time() - 2.5
     calls.clear()
     tool_f._ts = 0.0
     tool_f.tick(force=False)
@@ -944,6 +997,37 @@ def sec_bell():
           f"spot={tool_f.ui_state()['spot']} "
           f"pend={tool_f._slot[1].dlg_pend} gate={tool_f._stat['dlg_gate']}")
 
+    # **公告乱码接盘**(2026-11-07 真机:藏宝阁广告横幅/「打坐」弹窗正好盖住
+    # 「踪迹在X(x,y)」那行,整轮只读出怪名 —— 当天 8 次这种乱码,对应的怪一只
+    # 都没发布,用户:"第一坐标经常没识别到"):巧智魔/怯弱妖读到"只有怪名没坐标"
+    # 时,若没有在盯的周期,就地转 hover —— 悬停那行「在X(x,y)处」顶上报点。
+    win4 = Win()
+    _gband4 = list(_DLG)
+    _logs4 = []
+
+    def ocr_garble(img, **kw):
+        if Win.last != _gband4:            # 别的裁剪(任务栏那块)不掺和
+            return []
+        return [blk("精巧的巧智魔棋嫔果门好礼专营荆门礼老铺", 100, 430)]
+
+    app_h = types.SimpleNamespace(
+        cfg=core.split_config({
+                               "active_tool": "bell"}),
+        logs=_logs4, log=lambda m, **kw: _logs4.append(m))
+    tool_h = tools_bell.BellTool(
+        app_h, lambda: win4,
+        lambda: types.SimpleNamespace(recognize_blocks=ocr_garble))
+    tool_h._slot[1] = seed_state(win4.rect, trk=_BOX, mode="none")
+    win4.dialog = True
+    tool_h._ts = 0.0
+    tool_h.tick(force=False)
+    check("公告乱码:巧智魔只读出怪名(坐标被广告盖住) -> 转盯任务栏悬停",
+          tool_h._slot[1].trk_mode == tools_bell.TrkMode.HOVER
+          and tool_h._slot[1].trk_gap == tools_bell.HOVER_GAP
+          and any("改盯任务栏悬停坐标" in m for m in _logs4)
+          and tool_h.ui_state()["spot"] is None,
+          f"mode={tool_h._slot[1].trk_mode} | " + " | ".join(_logs4[-2:]))
+
     # 任务栏那块连着读不到字(实测约一半时间是"没显示"):**只记数 + 一条诊断
     # 日志 —— 不动表里那个框**(用户定的 2026-10-16:面板被游戏藏起来是正常的,
     # 战斗中/切场景时它就不画)。
@@ -1067,7 +1151,7 @@ def sec_bell():
     NEW7 = "去西梁女国(28,42)使用逐妖蛊虫,然后妖魔就会出现。"
     dlg7 = {"text": ""}
 
-    _band7 = tools_bell.rel_rect(win7.rect, tools_bell.DIALOG_BAND)
+    _band7 = list(_DLG)
 
     def ocr7(img, **kw):
         # 按"刚裁的是哪一块"分派(`Win.last`)—— 对话框那条读的是**面板里有字的那一截**
@@ -1202,6 +1286,41 @@ def sec_bell():
               np.full((30, 900, 3), 200, np.uint8)])) is not None,
           f"战斗框={_pb}")
 
+    # **宽度线 0.72**(2026-11-07 真机):鼠标停在旗子上冒出的 tooltip 只有
+    # 373/573 ≈ 0.65W,擦着旧线 0.6 被当成对话框,把任务翻成了旗子坐标。
+    # 真对话框盖满整条带(条带按最宽对话框量的),0.9W 这种照常认。
+    def _narrow_panel(frac):
+        p = np.full((300, 900, 3), 200, np.uint8)
+        p[:, 100:100 + int(900 * frac)] = 22
+        for ry in (40, 76, 112):           # 字挤在上面三行(过结构关)
+            for x in range(130, 100 + int(900 * frac) - 30, 9):
+                p[ry:ry + 3, x:x + 6] = (230, 230, 230)
+        return p
+
+    _narrow = tools_bell.panel_box(_narrow_panel(0.64))
+    check("面板:旗子 tooltip 那种 ~0.65W 的窄浮层不算对话框(2026-11-07 宽度线 0.72)",
+          _narrow is None
+          and tools_bell.panel_box(_narrow_panel(0.90)) is not None,
+          f"窄浮层框={_narrow}")
+
+    # **结构锚点**(2026-11-12 用户提的口径,游戏能换对话框皮肤):对话框 =
+    # 一整块低频平坦的横条(空白区)+ 上面 2~3 排文字行,跟配色无关 ——
+    # 浅色羊皮纸底(暗比≈0)也能认;纯平的天空/白墙没有文字行,不许认。
+    def _light_panel():
+        p = np.full((300, 900, 3), 200, np.uint8)        # 羊皮纸底(浅、不暗)
+        for ry in (40, 76):                               # 上面两排字
+            for x in range(60, 520, 9):
+                p[ry:ry + 3, x:x + 6] = (40, 40, 40)
+        return p
+
+    _lp = tools_bell.flat_panel_box(_light_panel())
+    check("面板:浅色皮肤(暗比≈0)按结构认得出(平坦横条 + 上方文字行)",
+          _lp is not None and _lp[3] - _lp[1] >= 100
+          and tools_bell.flat_panel_box(
+              np.full((300, 900, 3), 200, np.uint8)) is None
+          and tools_bell.flat_panel_box(_battle_band()) is None,
+          f"浅色框={_lp}")
+
     check("防误读:条带/文字块按比例切得对(相对区域坐标)",
           tools_bell.rel_rect([100, 200, 900, 600], (0.0, 0.0, 0.5, 0.5))
           == [100, 200, 500, 400])
@@ -1227,60 +1346,124 @@ def sec_bell():
           len(_thr_notes) == 3, str(_thr_notes))
     # 分辨率表:客户端每个尺寸下那两块在哪(相对窗口左上角)——
     # 窗口挪了/改大小都不用重设,多开时每个窗口吃同一张表
-    check("分辨率表:坐标是相对窗口的,换算成屏幕坐标时 x/y 各用各的偏移",
+    # 框的偏移换算(abs_rect)还在别处用:相对区域 -> 屏幕绝对,坐标 x/y 各用各的
+    check("矩形换算:相对区域坐标 -> 屏幕绝对坐标,x/y 各用各的偏移",
           tools_bell.abs_rect([1000, 10, 2022, 819], [10, 20, 900, 300])
           == [1010, 30, 1900, 310]
           and tools_bell.abs_rect([0, 0, 100, 100], [1, 2, 3, 4])
           == [1, 2, 3, 4])
-    check("分辨率表:尺寸差一两像素也算同一个(截图和 GetWindowRect 会差 1px)",
-          tools_bell.LAYOUT_TOL >= 1
-          and tools_bell.layout_for((815, 679)) is not None
-          and tools_bell.layout_for((815, 680)) is not None
-          and tools_bell.layout_for((816, 682)) is not None
-          and tools_bell.layout_for((900, 640)) is None
-          and tools_bell.layout_for((815, 680 - tools_bell.LAYOUT_TOL))
-          is not None
-          and tools_bell.layout_for((815, 680 - tools_bell.LAYOUT_TOL - 1))
-          is None)
-    check("分辨率表:支持的两档尺寸量到的对话框框(相对窗口左上角)",
-          tools_bell.layout_for((815, 680)) == [69, 355, 763, 582]
-          and tools_bell.layout_for((1011, 826)) == [168, 430, 860, 657]
-          and tools_bell.layout_for((1291, 1025)) is None)
-
-    import tempfile as _tf_mod
-    _lay = os.path.join(_tf_mod.mkdtemp(prefix="keju_layout_"), "b.json")
-    with patch(mods=(tools_bell,), LAYOUT_PATH=_lay):
-        tools_bell.save_layout((1022, 809), dlg=[10, 20, 900, 300])
-        tools_bell.save_layout("815x679", dlg=[5, 6, 800, 400])
-        check("分辨率表:按客户端尺寸存取 dlg(相对窗口左上角)",
-              tools_bell.layout_for((1022, 809)) == [10, 20, 900, 300]
-              and tools_bell.layout_for((815, 679)) == [5, 6, 800, 400]
-              and tools_bell.layout_for((999, 999)) is None)
-        # 任务栏框**现在进表**(用户 2026-10-17:量过的尺寸只扫那一块,不再整窗找)。
-        # 用**另一个尺寸**验证,别动上面那两个键(下面几条用例还要用它们)。
-        tools_bell.save_layout((1400, 1000), dlg=[7, 8, 900, 600])
-        tools_bell.save_layout((1400, 1000), dlg=[7, 8, 900, 600],
-                               trk=[700, 200, 980, 380])
-        with open(_lay, encoding="utf-8") as _f:
-            _raw = json.load(_f)
-        check("分辨率表:任务栏框也进表(量过的尺寸以后只扫那一块)",
-              _raw["1400x1000"].get("trk") == [700, 200, 980, 380]
-              and tools_bell.layout_trk((1400, 1000)) == [700, 200, 980, 380]
-              and tools_bell.layout_trk((999, 999)) is None
-              and tools_bell.layout_for((1400, 1000)) == [7, 8, 900, 600],
-              str(_raw))
-        _lt = tools_bell.BellTool.__new__(tools_bell.BellTool)
-        check("分辨率表:对话框框按表换算成屏幕坐标(没量过的尺寸走比例兜底)",
-              _lt.dialog_rect([1000, 10, 2022, 819]) == [1010, 30, 1900, 310]
-              and _lt.dialog_rect([0, 0, 640, 480]) is not None)
+    # 老的窗口尺寸分辨率表(bell_layouts.json:按 815x680/1011x826 查 dlg/trk,
+    # ±LAYOUT_TOL 容差)已整体退役(2026-11-12):dlg 走画布×DLG_RATIOS,
+    # trk 进 client_common.TRK_BOXES(占画比,640 档已定 0.7/0.1/1/0.6)—— 窗口尺寸
+    # 不再参与任何判定,当年"缩放切换 812x663 错配档"的坑从根上没了。
+    _lt = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    with patch(mods=(tools_bell,), canvas_res_of=lambda region: None):
+        _lt_none = _lt.fixed_dialog([0, 0, 900, 640])
+    check("对话框:画布没配到 -> None 整支不读(没有比例兜底,2026-11-08 定)",
+          _lt_none is None)
 
     _cs = tools_bell.BellTool.__new__(tools_bell.BellTool)
     _cs._bad_size = ""
-    check("尺寸检查:不支持的分辨率记下来给界面弹窗(支持的两档清空)",
+    check("尺寸检查:按游戏设置分辨率精确判(支持清空、不支持记给界面弹窗)",
           _cs.check_size((1291, 1025)) is False
           and _cs._bad_size == "1291x1025"
-          and _cs.check_size((815, 680)) is True
+          and _cs.check_size((640, 480)) is True
+          and _cs.check_size((800, 600)) is True
+          and _cs.check_size((1024, 768)) is True
           and _cs._bad_size == "")
+    # 从"不支持"改回支持档:记一条「继续识别」(keju 那边叫"自动纳入观测")
+    _csr = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    _csr._bad_size = ""
+    _csr_logs = []
+    _csr.app = types.SimpleNamespace(log=lambda m, **k: _csr_logs.append(m))
+    _csr.check_size((1280, 1024))
+    _csr.check_size((800, 600))
+    _csr.check_size((800, 600))          # 一直是支持档:不重复写
+    check("尺寸检查:从不支持恢复支持档 -> 记一条「继续识别」(只写一次)",
+          _csr._bad_size == ""
+          and sum(1 for m in _csr_logs if "恢复" in m) == 1,
+          str(_csr_logs))
+
+    _fd = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    _fd_logs = []
+    _fd.app = types.SimpleNamespace(log=lambda m, **k: _fd_logs.append(m))
+    _fd._bad_size = ""
+    _fd._warned_size = ""
+    _canv640 = [[100, 200, 740, 680], (640, 480), "tab"]
+    _canv800 = [[0, 0, 1000, 750], (800, 600), "tab"]
+    with patch(mods=(tools_bell,), canvas_res_of=lambda region: _canv640):
+        _fd_ok = _fd.fixed_dialog([90, 190, 750, 690])
+    with patch(mods=(tools_bell,), canvas_res_of=lambda region: _canv800):
+        _fd_ok2 = _fd.fixed_dialog([0, 0, 1000, 750])
+    with patch(mods=(tools_bell,),
+               canvas_res_of=lambda region: [[0, 0, 1600, 1200], (1280, 1024),
+                                             "tab"]):
+        _fd_bad = _fd.fixed_dialog([0, 0, 1700, 1300])
+    _fd_bad_size = _fd._bad_size    # 下面 1024 那拍是支持档,check_size 会清回 ""
+    with patch(mods=(tools_bell,), canvas_res_of=lambda region: None):
+        _fd_none = _fd.fixed_dialog([0, 0, 800, 700])
+    # 1024×768 档(2026-11-12 用户定的 17/48/84/76,真机投影量得
+    # 0.172/0.475/0.842/0.759 取整):fixed_dialog 照比例出框
+    with patch(mods=(tools_bell,),
+               canvas_res_of=lambda region: [[0, 0, 2048, 1536], (1024, 768),
+                                             "tab"]):
+        _fd_1024 = _fd.fixed_dialog([0, 0, 2048, 1536])
+    check("对话框框:画布×定稿比例(按档;两版式共用;不支持记 _bad_size、没画布 None)",
+          _fd_ok == [151, 430, 699, 606]
+          and _fd_ok2 == [160, 360, 850, 585]
+          and _fd_bad is None and _fd_bad_size == "1280x1024"
+          and _fd_none is None
+          and set(core.DLG_RATIOS) <= set(core.SUPPORTED_RES)
+          and core.DLG_RATIOS.get((1024, 768)) == (0.17, 0.48, 0.84, 0.76),
+          f"{_fd_ok} {_fd_ok2} {_fd_bad} {_fd._bad_size}")
+    check("对话框框:1024×768 档按 17/48/84/76 出框(2026-11-12 真机量得)",
+          _fd_1024 == [348, 737, 1720, 1167]
+          and _fd._bad_size == ""
+          and core.supported_res_text() == "640×480 / 800×600 / 1024×768",
+          f"{_fd_1024} logs={_fd_logs}")
+    # "支持但没量"的缺档保护(现在三档都有比例了,拿合成桩摘掉一档验):
+    # fixed_dialog 整支不读、不当"不支持"(check_size 过 -> _bad_size 空)、只说一次
+    with patch(mods=(tools_bell, core),
+               canvas_res_of=lambda region: [[0, 0, 1000, 750], (800, 600),
+                                             "tab"],
+               DLG_RATIOS={k: v for k, v in core.DLG_RATIOS.items()
+                           if k != (800, 600)}):
+        _fd_skip = _fd.fixed_dialog([0, 0, 1000, 750])
+        _fd_skip2 = _fd.fixed_dialog([0, 0, 1000, 750])
+    check("对话框框:支持但比例没量(合成桩摘 800 档)-> 整支不读、只提醒一次",
+          _fd_skip is None and _fd_skip2 is None
+          and _fd._bad_size == ""
+          and sum(1 for m in _fd_logs if "还没量" in m) == 1,
+          f"{_fd_skip} logs={_fd_logs}")
+    # 比例表/画布×比例的纯几何在 client_common(游戏属性,两边共用,
+    # 2026-11-12 用户定的:别的应用用不上可以不调,但不必每个应用重量)
+    check("对话框框:client_common.dialog_rect 纯几何(画布×比例;没量 None)",
+          core.dialog_rect([0, 0, 640, 480], (640, 480)) == [51, 230, 599, 406]
+          and core.dialog_rect([100, 200, 740, 680], (640, 480))
+          == [151, 430, 699, 606]
+          and core.dialog_rect([0, 0, 1000, 750], (800, 600))
+          == [160, 360, 850, 585]
+          and core.dialog_rect([0, 0, 2048, 1536], (1024, 768))
+          == [348, 737, 1720, 1167]
+          and core.dialog_rect([0, 0, 1600, 1200], (1280, 1024)) is None,
+          f"{core.dialog_rect([0, 0, 640, 480], (640, 480))}")
+    # 通用三件套(2026-11-12 用户定的:比例这套是游戏属性,全在 common 里,
+    # 别的应用直接拿 box_of / ratio_of / draw_box 用)
+    _tb = core.box_of([100, 200, 740, 680], core.TRK_BOXES[(640, 480)])
+    _rr = core.ratio_of([0, 0, 640, 480], [384, 48, 640, 316])
+    _img = np.zeros((480, 640, 3), dtype=np.uint8)
+    core.draw_box(_img, [0, 0, 640, 480], core.DLG_RATIOS[(640, 480)],
+                  (40, 80, 255), width=2)
+    check("client_common 通用几何:box_of / ratio_of / draw_box",
+          _tb == [484, 248, 740, 516]
+          and core.box_of([0, 0, 640, 480], None) is None
+          and _rr == (0.6, 0.1, 1.0, 0.658)
+          and core.ratio_of([0, 0, 0, 0], [0, 0, 1, 1]) is None
+          and _img[230, 100].tolist() == [40, 80, 255]
+          and _img[231, 100].tolist() == [40, 80, 255]
+          and _img[232, 100].tolist() == [0, 0, 0]
+          and _img[230, 50].tolist() == [0, 0, 0],
+          f"tb={_tb} rr={_rr} px={_img[230, 100].tolist()}")
     check("配置:手动框的键已删除",
           "bell_rect" not in core.CONFIG_SECTIONS["bell"]
           and "bell_rect" not in core.DEFAULT_CONFIG)
@@ -1341,7 +1524,7 @@ def sec_bell():
         """
         w9 = Win()
         cnt9 = {"trk": 0}
-        _band9 = tools_bell.rel_rect(w9.rect, tools_bell.DIALOG_BAND)
+        _band9 = list(_DLG)
 
         def ocr9(img, **kw):
             if Win.last == _band9:             # 对话框条带
@@ -1394,9 +1577,10 @@ def sec_bell():
     _reg2 = [0, 0, 1000, 880]
 
     class _Shot:
-        """合成客户端画面:**DIALOG_BAND 那块是暗且不彩的宽面板**。
+        """合成客户端画面:**定稿对话框框(画布 640×480 × DLG_RATIOS)那块是
+        暗且不彩的面板**(见 `panel_screen`)。
 
-        对话框说的值只走面板带那条主路(`panel_box` 按像素找面板),平色图判不出
+        对话框说的值只走定稿框那条主路(`panel_box` 按像素找面板),平色图判不出
         面板,主路就永远读不到对话框;按区域真裁 —— 假 OCR 靠"刚裁的是哪一块"分层
         (`last`:代码裁哪块就 OCR 哪块)。
         """
@@ -1409,7 +1593,7 @@ def sec_bell():
             _Shot.last = [x0, y0, x1, y1]
             return self.img[y0:y1, x0:x1][:, :, ::-1]
 
-    _dband2 = tools_bell.rel_rect(_reg2, tools_bell.DIALOG_BAND)   # 对话框那条带子
+    _dband2 = list(_DLG)                   # 对话框那个定稿框
 
     # 这一组的用例都在"**已经有框**"这条路上跑(框一律来自分辨率表):由下面
     # `_bell_tool` 直接种一个表框进去(和 `_scan` 里那个 st 初始化同形),假 OCR
@@ -1424,7 +1608,7 @@ def sec_bell():
             _Shot, lambda: types.SimpleNamespace(recognize_blocks=ocr))
         tool.regions = lambda: [list(_reg2)]     # 桩里没有真客户端窗口
         tool._slot[1] = tools_bell.SlotState(
-            region=tuple(_reg2), trk=list(_tr2))
+            region=tuple(_reg2), res=(640, 480), trk=list(_tr2))
         return tool
 
     with patch(mods=(tools_bell,), cursor_pos=lambda: None):
@@ -1494,15 +1678,18 @@ def sec_bell():
         # 一动,到下个周期 90 秒里任务栏 0 次 OCR,第二坐标全程没拿到)。
         _gu["trk"] = "去宝象国(24,51)使用逐妖蛊虫,然后跟着地上的蛊虫找到妖魔。"
         _gd["text"] = "去宝象国(24,51)使用逐妖蛊虫,然后妖魔就会出现。"
-        # 挪窗那一刻任务栏框要**重新从表里种**,所以配一张只带 trk 的表;
-        # dlg 故意不写 —— 写了就走"固定框"那条路,_Shot 的暗面板不在那块上
-        import tempfile as _tf_mv
-        _mv_lay = os.path.join(_tf_mv.mkdtemp(prefix="keju_layout_"), "b.json")
-        _mv_reg = [40, 20, 1000, 860]                  # 窗口挪了、也小了一号
+        # 挪窗那一刻任务栏框要**重新从 common 种**(2026-11-12 起表在
+        # client_common.TRK_BOXES,画布锚定):桩 core.trk_rect 给一个绝对框,
+        # 裁剪尺寸跟 _tr2 一样(假 OCR 按裁剪形状分派)。区域只缩一号、原点
+        # 不动 —— 新窗口还盖得住共享桩画布 [0,0,640,480](种框要靠
+        # canvas_res_of 配到画布,配不到就不种;真机挪窗原点也挪,那画布跟着
+        # 窗口走,一样配得到)。对话框那路提前把 _gd["text"] 清空了,这条
+        # 用例只盯任务栏。
+        _mv_reg = [0, 0, 970, 850]                     # 窗口小了一号(区域变了)
         _mv_trk = [600, 173, 980, 472]                 # 裁剪尺寸跟 _tr2 一样
 
-        with patch(mods=(tools_bell,), LAYOUT_PATH=_mv_lay):
-            tools_bell.save_layout((960, 840), trk=list(_mv_trk))
+        with patch(mods=(core,),
+                   trk_rect=lambda canvas, res: list(_mv_trk)):
             _vt = _bell_tool({}, _ocr_g)
             for _ in range(4):
                 _vt._ts = 0.0
@@ -1524,6 +1711,44 @@ def sec_bell():
                   _mode_after_move == "item"
                   and _vt.spot == ("建邺城", 15, 122),
                   f"挪窗后 {_mode_after_move},最终 {_vt.spot}")
+
+        # ⑤**游戏里换分辨率**(窗口矩形常常一像素都不动):任务栏框是按游戏
+        # 分辨率分档取的,必须跟着重取 —— 留着旧档会去读错位置,第二坐标读不到。
+        # 这条用例只动状态:假 OCR 全返回空,顺手看"盯"的那份不丢。
+        _rr_trk = [900, 100, 1000, 200]                # 800 档给一个绝对框(桩)
+        _rt = _bell_tool({}, lambda img, **kw: [])
+        _rt.app.log = lambda m, **kw: _rt_logs.append(m)
+        _rt_logs = []
+        _rt._ts = 0.0
+        _rt.tick(force=False)                          # 640 档:框就是种进去那份
+        _rst = _rt._slot[1]
+        _same_trk = list(_rst.trk)
+        with patch(mods=(core,),
+                   find_client_canvases=lambda: ([
+                       ("梦幻西游 ONLINE", (800, 600), [0, 0, 1000, 750],
+                        1.0, "tab")], []),
+                   trk_rect=lambda canvas, res: list(_rr_trk)):
+            _rst.trk_ts = 123.0                        # 旧档留下的时刻,该被清
+            _rst.trk_psig = ("旧签名",)
+            _rt._ts = 0.0
+            _rt.tick(force=False)
+        check("游戏里换分辨率(窗口矩形没动):任务栏框按新档重取、签名/时刻归零",
+              _same_trk == list(_tr2)
+              and _rst.res == (800, 600)
+              and _rst.trk == _rr_trk
+              and _rst.trk_ts == 0.0
+              and _rst.trk_psig is None
+              and any("分辨率变成 800x600" in m for m in _rt_logs),
+              f"{_rst.res} {_rst.trk} {_rt_logs[-2:]}")
+        # 表框是**画布锚定的绝对框**:`SlotState.trk` 存相对窗口,扫描时
+        # `abs_rect` 再加一次原点 —— 不减就会按窗口位置整体偏掉
+        with patch(mods=(core,),
+                   trk_rect=lambda canvas, res: [800, 110, 1100, 447]):
+            _rel_trk = tools_bell.trk_seed_rel(
+                [100, 50, 1100, 930],
+                [[100, 50, 1100, 800], (800, 600), "tab"])
+        check("任务栏框:表给的绝对框先减窗口原点(不然 abs_rect 会再加一遍)",
+              _rel_trk == [700, 60, 1000, 397], str(_rel_trk))
 
         # ③任务栏那个值必须**自己**出现过两次才算数(原来把 confirmed() 当布尔用、
         #   报的却是最新那次读数 —— "历史里有个稳定值"就放行一次单发读花;实测
@@ -1633,7 +1858,7 @@ def sec_bell():
             _Shot, lambda: types.SimpleNamespace(recognize_blocks=_ocr_h2))
         _h2.regions = lambda: [list(_reg2)]
         _h2._slot[1] = tools_bell.SlotState(
-            region=tuple(_reg2), trk=list(_tr2))
+            region=tuple(_reg2), res=(640, 480), trk=list(_tr2))
         tools_bell.cursor_pos = lambda: (_tr2[0] + 30, _tr2[1] + 30)
         _h2._ts = 0.0
         _h2.tick(force=False)                  # ①开周期(hover):这拍提前 return,不读任务栏
@@ -1674,7 +1899,7 @@ def sec_bell():
             _Shot, lambda: types.SimpleNamespace(recognize_blocks=_ocr_ui))
         _ut.regions = lambda: [list(_reg2)]
         _ut._slot[1] = tools_bell.SlotState(
-            region=tuple(_reg2), trk=list(_tr2))
+            region=tuple(_reg2), res=(640, 480), trk=list(_tr2))
         tools_bell.cursor_pos = lambda: (_tr2[0] + 30, _tr2[1] + 30)
         _ut._ts = 0.0
         _ut._slot[1].trk_ts = 0.0
@@ -1707,7 +1932,7 @@ def sec_bell():
         _pd = {"n": 0}
         _A = blk("有的妖魔行迹隐秘。去朱紫国(127,90)使用蛊虫,然后跟着它。",
                  100, 430)
-        _pdband = tools_bell.rel_rect(win.rect, tools_bell.DIALOG_BAND)
+        _pdband = list(_DLG)
 
         def _ocr_pd(img, **kw):
             _pd["n"] += 1
@@ -2256,9 +2481,12 @@ def sec_bell():
           f"{len(_shot_rows)} 张,坏 {_shot_bad}")
 
     check("只认一台:多开时界面靠角色名让用户选(标题里抠得出来)",
-          tools_bell.client_name(
+          core.client_name(
               "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])") == "祭花′"
-          and tools_bell.client_name("梦幻西游 ONLINE") == "梦幻西游 ONLINE")
+          and core.client_name("梦幻西游 ONLINE") == "")
+    # 登录窗(标题没有" - ")抠不出名字 -> 空串:这是「登录角色才识别」的判据
+    # (find_client_canvases 与 client_choices 都拿它过滤登录窗,2026-11-12 与
+    # keju 同源对齐;全被过滤掉时界面提示「请先登录角色」)。
 
     # 六种怪的真实文案(**逐字**,来源标在条目里)—— 这张表就是防"把一种的文案套到
     # 另一种上"。2026-10-16 晚上用户又给了三张 1:1 截图,招魂幡/逐妖蛊虫/梦魇魔这三条
@@ -2325,6 +2553,21 @@ def sec_bell():
              if "对话框" in row[0] and not tools_bell.has_bell_words(row[1])]
     check("话术门槛:六种怪的对话框原文都过得了(别把自己的任务挡了)",
           not _miss, str(_miss))
+    # 2026-11-07 真机(朋友机,朱紫国(133,10) 报"没识别到、地图没切"):鼠标停在
+    # 旗子上冒出的 tooltip 被当成对话框读了两遍,把目标翻成了旗子的坐标
+    # 长寿村(111,25)。两道闸各挡一段:
+    #   ① 话术门槛:「使用」从词表里删了 —— 它是万金油,"还能使用38次"这种
+    #     tooltip 文字全靠它作保;不带任务词的浮层从此一个核心词都凑不齐。
+    #   ② panel_box:真对话框盖满整条带,这种 tooltip 只有 ~0.65W,宽度线
+    #     0.6 -> 0.72 卡住(用例见上面 panel_box 那组)。
+    # 注意②是主力:旗子常拿任务名当旗名("去长寿村找怯弱妖"),带任务词的
+    # tooltip 门槛本来就拦不住 —— 那一半靠宽度线。
+    check("话术门槛:「还能使用N次」那种浮层文字没有核心词作保了(2026-11-07 删「使用」)",
+          not tools_bell.has_bell_words("在长寿村(111,25)处 还能使用38次 "
+                                        "右键点击可查看坐标")
+          and tools_bell.has_bell_words("去长寿村找怯弱妖 长寿村(111,25) "
+                                        "还能使用38次"),
+          f"tooltip={tools_bell.has_bell_words('在长寿村(111,25)处 还能使用38次')}")
     # 标题那行常被读花(实测「降双快通」/「降欢风衡」/「降妖优魔」):**以「降」开头
     # 且不长**就认 —— 别的任务标题不以「降」开头,不会误认(「降妖伏魔」标题下
     # 那一段就是 _bell_scope 圈范围用的)。
@@ -2393,10 +2636,10 @@ def sec_bell():
     with tempfile.TemporaryDirectory(prefix="keju_bounds_") as d:
         mdir = os.path.join(d, "data", "maps")
         os.makedirs(mdir, exist_ok=True)
-        with patch(mods=(tools_bell,), MAP_DIR=mdir,
+        with patch(mods=(tools_maps,), MAP_DIR=mdir,
                    MAP_CALIB_PATH=os.path.join(mdir, "calib.json"),
                    MAP_BOUNDS_PATH=os.path.join(mdir, "bounds.json")):
-            with open(tools_bell.MAP_BOUNDS_PATH, "w",
+            with open(tools_maps.MAP_BOUNDS_PATH, "w",
                       encoding="utf-8") as f:
                 json.dump({"建邺城": [0, 0, 286, 144]}, f)
             check("铃铛:范围不合法就不给标定",
@@ -2482,22 +2725,172 @@ def sec_bell():
               _reg.regions() == [[900, 0, 1700, 600]] and _reg_logs == [],
               f"{_reg.regions()} {_reg_logs}")
         _wins["v"] = ([("A - 烛龙′[1]", [0, 0, 800, 600]),
-                       ("C - 别个[3]", [900, 0, 1700, 600])], [])
+                       ("C - 别个[3]", [1000, 800, 1800, 1400])], [])
         _reg.regions()
         _reg.regions()                        # 同样的原因只说一次
-        check("扫哪:选中的客户端不在了 -> 返回空 + 日志说一次原因",
+        check("扫哪:选中的那台不在(别处那台不算)-> 返回空 + 原因只说一次",
               _reg.regions() == [] and len(_reg_logs) == 1
-              and "祭花′" in _reg_logs[0], str(_reg_logs))
+              and any("不在枚举结果里" in m for m in _reg_logs)
+              and _reg.ui_state()["client_lost"] is True,
+              f"{_reg_logs} {_reg.ui_state()}")
         _wins["v"] = ([], [])
         _reg.regions()
         check("扫哪:一个客户端都没枚举到 -> 也留一条原因(不刷屏)",
-              len(_reg_logs) == 2 and "没枚举到客户端" in _reg_logs[1],
+              len(_reg_logs) == 2 and "没枚举到客户端" in _reg_logs[-1],
               str(_reg_logs))
+        _wins["v"] = ([], ["梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])"])
+        check("扫哪:客户端最小化 -> 不算退出(底行名字留着,扫描暂停)",
+              _reg.regions() == []
+              and _reg.ui_state()["client_lost"] is False
+              and "最小化" in _reg_logs[-1],
+              f"{_reg.ui_state()} {_reg_logs[-1]}")
+        _reg.cfg = lambda k, d=None: {}.get(k, d)   # 没选过客户端(启动在登录页)
+        _wins["v"] = ([("梦幻西游 ONLINE", [0, 0, 800, 600])], [])
+        check("扫哪:只有登录窗 -> 不接(扫描暂停)",
+              _reg.regions() == [] and "登录窗口" in _reg_logs[-1],
+              f"{_reg.regions()} {_reg_logs}")
+        _wins["v"] = ([("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
+                        [0, 0, 800, 600])], [])
+        _r = _reg.regions()
+        check("扫哪:登录角色后自动接入监听(不用点药丸)",
+              _r == [[0, 0, 800, 600]]
+              and _reg.ui_state()["client_name"] == "祭花′"
+              and _reg.ui_state()["client_rect"] == [0, 0, 800, 600]
+              and _reg.ui_state()["client_lost"] is False
+              and any("自动接入监听" in m for m in _reg_logs),
+              f"{_r} {_reg_logs}")
+
+    # 客户端生命周期(启动/登录/登出/关闭/最小化/还原/挪窗/换档)的判定全在
+    # `client_watch`(纯逻辑、单文件可复用;应用只喂快照、照着事件记日志)。
+    # 这里不碰真窗口,直接喂快照验矩阵 —— 应用侧 regions() 只是它的胶水。
+    import client_watch as cw
+    _B1 = (0, 0, 800, 600)
+    _B2 = (0, 0, 1000, 750)
+    _LOGIN = cw.Client(title="梦幻西游 ONLINE", box=_B1)
+    _ROLE = cw.Client(title="梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[1])",
+                      box=_B1, name="祭花′", res=(640, 480))
+    _tr_c = cw.Tracker()
+    _e1 = _tr_c.poll([_LOGIN])
+    _e2 = _tr_c.poll([_ROLE])
+    _e3 = _tr_c.poll([_LOGIN])
+    check("客户端生命周期:启动 = opened;登录角色 = login;原地退出登录 = logout(带名字)",
+          [e.kind for e in _e1] == ["opened"]
+          and [e.kind for e in _e2] == ["login"]
+          and _e2[0].client.name == "祭花′"
+          and [e.kind for e in _e3] == ["logout"]
+          and "祭花′" in _e3[0].note,
+          f"{[e.kind for e in _e1]} {[e.kind for e in _e2]} "
+          f"{[e.kind for e in _e3]}")
+    _e4 = _tr_c.poll([])
+    check("客户端生命周期:关闭客户端 = closed",
+          [e.kind for e in _e4] == ["closed"], str(_e4))
+    _tr_m = cw.Tracker()
+    _tr_m.poll([_ROLE])
+    _e5 = _tr_m.poll([cw.Client(title=_ROLE.title, name="祭花′",
+                                minimized=True)])
+    _e6 = _tr_m.poll([_ROLE])
+    check("客户端生命周期:最小化 = minimized(不算退出);还原 = restored",
+          [e.kind for e in _e5] == ["minimized"]
+          and "最小化" in _e5[0].note
+          and [e.kind for e in _e6] == ["restored"],
+          f"{[e.kind for e in _e5]} {[e.kind for e in _e6]}")
+    _tr_mv = cw.Tracker()
+    _tr_mv.poll([_ROLE])
+    _e7 = _tr_mv.poll([cw.Client(title=_ROLE.title, box=_B2,
+                                 name="祭花′", res=(800, 600))])
+    _tr_t = cw.Tracker()
+    _tr_t.poll([_ROLE])
+    _e8 = _tr_t.poll([cw.Client(title=_ROLE.title, box=_B1, name="祭花′",
+                                res=(1280, 1024), supported=False)])
+    check("客户端生命周期:窗口挪了 = moved;换到不支持档 = tier",
+          "moved" in [e.kind for e in _e7]
+          and "tier" in [e.kind for e in _e8]
+          and "不支持" in [e.note for e in _e8 if e.kind == "tier"][0],
+          f"{[e.kind for e in _e7]} {[e.kind for e in _e8]}")
+    _pick_role = cw.Client(title=_ROLE.title, box=_B1, name="祭花′")
+    _pick_other = cw.Client(title="B - 烛龙′[2]", box=_B2, name="烛龙′")
+    check("客户端生命周期:单客户端选台 —— 按名字优先,退原因 gone/login/"
+          "minimized/none",
+          cw.choose_one([_pick_other, _pick_role], "祭花′")[0] is _pick_role
+          and cw.choose_one([_pick_other], "祭花′", "x") == (None, "gone")
+          and cw.choose_one([_LOGIN]) == (None, "login")
+          and cw.choose_one([cw.Client(title="t", name="祭花′",
+                                        minimized=True)]) == (None, "minimized")
+          and cw.choose_one([]) == (None, "none"),
+          f"{cw.choose_one([_pick_other, _pick_role], '祭花′')} "
+          f"{cw.choose_one([_pick_other], '祭花′', 'x')}")
+    _picked_renamed = cw.Client(title="B - 烛龙′[2]", box=_B1, name="烛龙′")
+    check("客户端生命周期:同一窗口标题变了(换角色/切标签)-> 继续跟不暂停",
+          cw.choose_one([_picked_renamed], "A - 祭花′[1]", "A - 祭花′[1]",
+                        _B1) == (_picked_renamed, "renamed")
+          and cw.choose_one([_picked_renamed], "A - 祭花′[1]", "A - 祭花′[1]",
+                            (5000, 5000, 5800, 5600)) == (None, "gone"),
+          f"{cw.choose_one([_picked_renamed], 'A - 祭花′[1]', 'x', _B1)} "
+          f"{cw.choose_one([_picked_renamed], 'A - 祭花′[1]', 'x', (5000, 5000, 5800, 5600))}")
+
+    # 客户端枚举回退成**每拍一次**(2026-11-12 用户定的:实测一次 ≈0.24ms,
+    # 比截图/OCR 便宜得多;不做缓存,窗口挪动/换分辨率当拍跟上)。
+    _cnt = {"n": 0}
+
+    def _wins_count():
+        _cnt["n"] += 1
+        return ([("A - 烛龙′[1]", [0, 0, 800, 600])], [])
+
+    _thr = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    _thr.app = types.SimpleNamespace(log=lambda m, **kw: None)
+    _thr.cfg = lambda k, d=None: {}.get(k, d)
+    with patch(find_client_windows=_wins_count):
+        _r1 = _thr.regions()
+        _r2 = _thr.regions()
+        _n_polls = _cnt["n"]
+    check("扫哪:客户端枚举每拍都做(不缓存,窗口挪动/换档当拍跟上)",
+          _r1 == _r2 == [[0, 0, 800, 600]] and _n_polls == 2,
+          f"{_r1} {_r2} 枚举 {_n_polls} 次")
+    # 多标签版一个窗口挂两个角色:点标签换角色时标题会变、窗口不变 ——
+    # 不能当成"选定的客户端不在了"暂停扫描(2026-11-12 真机碰到)
+    _logs3 = []
+    _thr2 = tools_bell.BellTool.__new__(tools_bell.BellTool)
+    _thr2.app = types.SimpleNamespace(log=lambda m, **kw: _logs3.append(m))
+    _thr2.cfg = lambda k, d=None: (
+        "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 甲[1])" if k == "bell_client"
+        else d)
+    with patch(find_client_windows=lambda: (
+            [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 甲[1])",
+              [0, 0, 800, 600])], [])):
+        _thr2.regions()
+    with patch(find_client_windows=lambda: (
+            [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 乙[2])",
+              [0, 0, 800, 600])], [])):
+        _r3 = _thr2.regions()
+    check("扫哪:同一窗口切标签/换角色 -> 继续扫,不暂停、不写自动接入",
+          _r3 == [[0, 0, 800, 600]]
+          and _thr2._client_name == "乙"
+          and not any("自动接入" in m for m in _logs3),
+          f"{_r3} {_thr2._client_name} {_logs3}")
+    # 画布配不到(窗口最小化/刚换档、枚举还没给出画布)-> `_scan` 整拍跳过,
+    # 绝不按旧坐标读别处的内容
+    _ccnt = {"n": 0}
+
+    def _canv_stub(region):
+        _ccnt["n"] += 1
+        return None
+
+    _skip_calls = []
+    with patch(mods=(tools_bell,), canvas_res_of=_canv_stub):
+        _thr._stat = {"skip": 0}
+        _thr._slot = {}
+        _thr._slot[1] = tools_bell.SlotState(region=(0, 0, 800, 600))
+        _skip_calls.append(_thr._scan(1, (0, 0, 800, 600), None, None,
+                                      False, time.time()))
+    check("扫哪:画布配不到 -> 整拍跳过,不按旧坐标读",
+          _skip_calls == [False] and _ccnt["n"] == 1
+          and _thr._stat["skip"] == 1,
+          f"{_skip_calls} 画布枚举 {_ccnt['n']} 次")
 
     # 采集底图:先按坐标范围标定,没有范围才点角色位置
     with tempfile.TemporaryDirectory(prefix="keju_map_") as d:
         mdir = os.path.join(d, "data", "maps")
-        with patch(mods=(tools_bell,), MAP_DIR=mdir,
+        with patch(mods=(tools_maps,), MAP_DIR=mdir,
                    MAP_CALIB_PATH=os.path.join(mdir, "calib.json")):
             tools_bell.save_map_calib("朱紫国", 2.0, 2.0)
             check("铃铛:标定写进 calib.json,别的图仍是默认",
@@ -2554,7 +2947,7 @@ def sec_bell():
         bp = os.path.join(d, "bounds.json")
         with open(bp, "w", encoding="utf-8") as f:
             json.dump({"宝象国": [0, 0, 159, 120]}, f)
-        with patch(mods=(tools_bell,), MAP_BOUNDS_PATH=bp):
+        with patch(mods=(tools_maps,), MAP_BOUNDS_PATH=bp):
             check("录入地图:坐标范围给出这张图的长宽比",
                   abs(tools_bell.map_ratio("宝象国") - 159 / 120.0) < 1e-9
                   and tools_bell.map_ratio("没有这张图") is None)
@@ -2602,20 +2995,35 @@ def sec_bell():
     check("单实例:同进程第二次创建互斥体必判已运行",
           core.single_instance() is False)
 
-    # 支持档文案:日志与弹框共用一份(supported_res_text),别再手写死数字
-    check("分辨率文案:supported_res_text 与支持的两档一致",
-          tools_bell.supported_res_text() == "640×480 / 800×600"
-          and all(tools_bell.supported_size(r)
-                  for r in ((815, 680), (1011, 826)))
-          and not tools_bell.supported_size((1024, 768)))
+    # 支持档文案:日志与弹框共用一份(core.supported_res_text,实现在 clients.py),
+    # 别再手写死数字。三档(2026-11-12 用户定的:1024×768 与 keju 对齐重新加入);
+    # 任务栏框走 client_common.TRK_BOXES(画布×占画比,2026-11-12 用户定的
+    # 0.7/0.1/1/0.6 口径),窗口尺寸不再参与任何判定。
+    check("分辨率文案:supported_res_text 与支持的三档一致",
+          core.supported_res_text() == "640×480 / 800×600 / 1024×768"
+          and core.trk_rect([0, 0, 640, 480], (640, 480))
+          == [384, 48, 640, 316]
+          and core.trk_rect([100, 200, 740, 680], (640, 480))
+          == [484, 248, 740, 516]
+          and core.trk_rect([0, 0, 1000, 750], (800, 600))
+          == [700, 60, 1000, 397]
+          and core.trk_rect([0, 0, 1024, 768], (1024, 768))
+          == [778, 46, 1024, 322]
+          and core.trk_rect([0, 0, 1600, 1200], (1280, 1024)) is None)
 
-    # 就近归档:给"建议调最小档"的提示用(识别仍走 ±20 容差表,两套口径别混)
-    check("分辨率归档:窗口按面积就近归档,不支持返回 None",
-          tools_bell.res_tier_index((815, 680)) == 0
-          and tools_bell.res_tier_index((812, 663)) == 0
-          and tools_bell.res_tier_index((1011, 826)) == 1
-          and tools_bell.res_tier_index((1024, 768)) is None
-          and tools_bell.min_res_text() == "640×480")
+    # **画布分辨率**(2026-11-07 新口径,core.canvas_game_res / find_client_canvases):
+    # 游戏画面是 WSGAME 子窗口,画布尺寸 = 游戏设置分辨率 × 显示器倍率,精确无漂移
+    # (真机四种组合实测:125%/800×600、100%/800×600、150%/800×600、150%/640×480)。
+    # 感知进程 dpi=真值,物理折回逻辑;不感知进程 dpi 被虚拟化成 96,原值即逻辑。
+    check("画布分辨率:画布尺寸+显示器DPI -> 游戏设置分辨率(感知/不感知两种进程都对)",
+          core.canvas_game_res((1000, 750), 120) == (800, 600)     # 125% 感知
+          and core.canvas_game_res((1200, 900), 144) == (800, 600)  # 150% 感知
+          and core.canvas_game_res((960, 720), 144) == (640, 480)   # 150% 感知
+          and core.canvas_game_res((800, 600), 120) == (640, 480)   # 125% 感知
+          and core.canvas_game_res((800, 600), 96) == (800, 600)    # 100% 两种进程
+          and core.canvas_game_res((800, 600), 96) == core.canvas_game_res(
+              (800, 600), 0)                                        # dpi 缺省兜底
+          and core.canvas_game_res((812, 663), 96) == (812, 663))   # 非标准画布不猜
 
     # 安装包版本:没指定时最右位 +1(用户定的每次打包 +1;--version 则原样用)
     import package
@@ -2733,7 +3141,7 @@ def sec_bell_ui():
             # 底图比例要和宝象国的坐标范围(159x120)对上,不然会被判成"不是这张图"
             json.dump({"宝象国": [0, 0, 159, 120]}, f)
         # 整组都在沙箱里:底图/标定/坐标范围都别落到仓库的 data/maps
-        with patch(mods=(tools_bell,), MAP_DIR=mdir, MAP_BOUNDS_PATH=bounds,
+        with patch(mods=(tools_maps,), MAP_DIR=mdir, MAP_BOUNDS_PATH=bounds,
                    MAP_CALIB_PATH=os.path.join(mdir, "calib.json")), \
                 patch(find_client_windows=lambda: ([], [])):
             app = _bell_app()
@@ -2892,6 +3300,56 @@ def sec_bell_ui():
                       f"{_chip_txt(app)!r}/{_chip_fg(app)}")
             ui_bell._stop_flash(app)
             ui_bell.set_client(app, "")
+            # 悬停角色名药丸:上方浮出**当前游戏分辨率**(2026-11-12 照 keju 要的)。
+            # 按角色名实时匹配画布 —— 拖动窗口/换分辨率都跟得上,不靠旧矩形。
+            ui_bell.set_client(app, "祭花′")
+            app.engine.bell_tool.ui_state = lambda: {
+                "spot": None, "target": "",
+                "client": "梦幻西游 ONLINE",
+                "client_name": "祭花′",
+                "client_rect": [812, 130, 1812, 880]}
+            _canv_hover = [("梦幻西游 ONLINE", (800, 600),
+                            [812, 130, 1812, 880], 1.25, "tab")]
+
+            def _tip_text(t):
+                if t is None:
+                    return ""
+                try:
+                    if not t.winfo_exists():
+                        return ""
+                except Exception:
+                    return ""
+                for w in t.winfo_children():
+                    try:
+                        for i in w.find_all():
+                            if w.type(i) == "text":
+                                return str(w.itemcget(i, "text"))
+                    except Exception:
+                        pass
+                return ""
+
+            with patch(find_client_canvases=lambda: (list(_canv_hover), [])):
+                app.bell_client_chip.event_generate("<Enter>", when="now")
+                app.root.update()
+                _tip = getattr(app, "_client_tip", None)
+                check("底行:悬停角色名 -> 浮出当前游戏分辨率(药丸上方的小条)",
+                      _tip is not None and _tip_text(_tip) == "800×600"
+                      and _tip.winfo_y()
+                      < app.bell_client_chip.winfo_rooty(),
+                      f"{_tip_text(_tip)!r} y={getattr(_tip, 'winfo_y', lambda: '?')()}")
+                app.bell_client_chip.event_generate("<Leave>", when="now")
+                app.root.update()
+                check("底行:鼠标移开 -> 悬停小条收掉",
+                      getattr(app, "_client_tip", None) is None)
+            # 没接入客户端:悬停就写「未定位」(不弹框)
+            app.engine.bell_tool.ui_state = lambda: {
+                "spot": None, "target": "", "client": "",
+                "client_name": "", "client_rect": None}
+            app.on_client_hover_start()
+            check("底行:没定位客户端 -> 悬停写「未定位」",
+                  _tip_text(getattr(app, "_client_tip", None)) == "未定位")
+            app.on_client_hover_end()
+            app.engine.bell_tool.ui_state = lambda: {"spot": None, "target": ""}
             # 字号是磅值(20pt 在 100% 下重排成 ~41px 高):头部行高必须由内容撑,
             # 写死高度会把地名/坐标上下裁掉(用户 2026-10-21 报"地图名显示不全")
             check("小窗:地名/坐标不被裁(控件高 = 请求高,行高由内容撑)",
@@ -2931,6 +3389,15 @@ def sec_bell_ui():
                       and not hasattr(app, "bell_locate_btn")
                       and not hasattr(app, "bell_coord_var"),
                       _chip_txt(app))
+            with patch(find_client_windows=lambda: (
+                    [("梦幻西游 ONLINE", [0, 0, 1000, 750])], [])):
+                app.engine.bell_tool.locate = lambda: 1
+                app._set("bell_client", "")
+                gui.App._enter_bell_slow(app)
+                check("进功能:只有登录窗 -> 只落日志,底行不写登录标题",
+                      _chip_txt(app) == ui_bell.CLIENT_NONE
+                      and any("登录窗口" in _m for _m in app.logs),
+                      f"{_chip_txt(app)!r} {app.logs[-3:]}")
             with patch(find_client_windows=lambda: ([], [])):
                 app.engine.bell_tool.locate = lambda: 0
                 gui.App._enter_bell_slow(app)
@@ -2971,6 +3438,129 @@ def sec_bell_ui():
                   and _txt(app.bell_coord) == "96, 44",
                   f"{_txt(app.bell_name)} / {_txt(app.bell_coord)}")
 
+            # **刷新链自愈**(2026-11-07 真机疑影):bv.set 成功后 set_coord 要是
+            # 抛一次异常(轮询里吞掉),文字已等于新值、界面却停在旧画面 —— 旧闸门
+            # "只比文字"会永远不再重画,要等下一次目标变更才跳过去。闸门带上 spot
+            # 之后,失败的那拍下一拍自动重试(50ms),目标不再有"内部切了、窗口
+            # 永远不跟"的死角。
+            app.engine.bell_tool = types.SimpleNamespace(
+                ui_state=lambda: {"spot": ("朱紫国", 133, 10),
+                                  "target": "朱紫国 (133,10)"})
+            app.bell_var.set("朱紫国 (133,10)")     # 模拟"文字已写、界面没画成"
+
+            def _boom(*_a):
+                raise RuntimeError("炸一次")
+
+            _real_set_coord = ui_bell.set_coord
+            ui_bell.set_coord = _boom
+            try:
+                app._drain_logs()
+            finally:
+                ui_bell.set_coord = _real_set_coord
+            check("小窗:刷新那拍 set_coord 抛异常 -> 不崩轮询、界面停在旧画面",
+                  _txt(app.bell_name) == "宝象国"
+                  and _txt(app.bell_coord) == "96, 44",
+                  f"{_txt(app.bell_name)} / {_txt(app.bell_coord)}")
+            app._drain_logs()                       # 下一拍自愈
+            check("小窗:刷新失败后下一拍自动重试 -> 地名/坐标跟上",
+                  _txt(app.bell_name) == "朱紫国"
+                  and _txt(app.bell_coord) == "133, 10",
+                  f"{_txt(app.bell_name)} / {_txt(app.bell_coord)}")
+
+            # 登录页登录角色后:工具那边自动接入客户端 -> 底行跟着写角色名
+            app.engine.bell_tool = types.SimpleNamespace(
+                ui_state=lambda: {
+                    "spot": None, "target": "",
+                    "client": "梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
+                    "client_name": "祭花′",
+                    "client_rect": [800, 100, 1615, 780]})
+            app._set("bell_client", "")
+            app._bell_auto_seen = ""
+            app._drain_logs()
+            check("小窗:工具自动接入客户端 -> 底行跟着写角色名",
+                  _chip_txt(app) == "祭花′"
+                  and app.cfg["bell"]["bell_client"].endswith(
+                      "祭花′[29024311])"),
+                  f"{_chip_txt(app)} / "
+                  f"{app.cfg['bell'].get('bell_client')}")
+
+            # 客户端退出/回登录页:药丸不能一直挂着旧角色名(用户 2026-11-12 报的)。
+            # 配置里的 bell_client 留着(同一角色重登自动接回去),只收底行。
+            _kept_title = app.cfg["bell"]["bell_client"]
+            app.engine.bell_tool = types.SimpleNamespace(
+                ui_state=lambda: {
+                    "spot": None, "target": "", "client": _kept_title,
+                    "client_name": "祭花′", "client_rect": None,
+                    "client_lost": True})
+            app._drain_logs()
+            check("小窗:客户端退出 -> 底行收掉旧角色名,不再挂着(配置留着)",
+                  _chip_txt(app) == ui_bell.CLIENT_NONE
+                  and app.cfg["bell"]["bell_client"] == _kept_title
+                  and any("客户端已退出" in m for m in app.logs),
+                  f"{_chip_txt(app)!r} / {app.cfg['bell'].get('bell_client')!r}")
+            # 同一台重新登录:自动接回去,底行重新写名字
+            app.engine.bell_tool = types.SimpleNamespace(
+                ui_state=lambda: {
+                    "spot": None, "target": "", "client": _kept_title,
+                    "client_name": "祭花′",
+                    "client_rect": [800, 100, 1615, 780],
+                    "client_lost": False})
+            app._drain_logs()
+            check("小窗:角色重新登录 -> 底行自动接回去",
+                  _chip_txt(app) == "祭花′", _chip_txt(app))
+
+            # 扫描中发现分辨率不支持(游戏里改了分辨率):**角色名变红**就是
+            # 提示,不弹框、不换文案;改回支持档自动复原(2026-11-12 用户定的)。
+            ui_bell.set_client(app, "祭花′")
+            _bad_red = ui_widgets.bell_palette(app.bell_mode)["red"]
+            app.engine.bell_tool = types.SimpleNamespace(
+                ui_state=lambda: {"spot": None, "target": "",
+                                  "client": _kept_title,
+                                  "bad_size": "1280x1024"})
+            app._drain_logs()
+            check("小窗:分辨率不支持 -> 角色名变红(不弹框、不换文案)",
+                  _chip_txt(app) == "祭花′"
+                  and _chip_fg(app) == _bad_red,
+                  f"{_chip_txt(app)!r} / {_chip_fg(app)}")
+            app.engine.bell_tool = types.SimpleNamespace(
+                ui_state=lambda: {"spot": None, "target": "",
+                                  "client": _kept_title, "bad_size": ""})
+            app._drain_logs()
+            check("小窗:改回支持的分辨率 -> 角色名复原",
+                  _chip_txt(app) == "祭花′"
+                  and _chip_fg(app) != _bad_red,
+                  f"{_chip_txt(app)!r} / {_chip_fg(app)}")
+            ui_bell._stop_flash(app)
+
+            # 悬停角色名:分辨率不在支持档 -> 直接红字「分辨率不支持」
+            # (2026-11-12 用户定的),支持档才报数字
+            def _tip_parts():
+                tip = getattr(app, "_client_tip", None)
+                if tip is None:
+                    return "", ""
+                cv = tip.winfo_children()[0]
+                texts = [i for i in cv.find_all() if cv.type(i) == "text"]
+                if not texts:
+                    return "", ""
+                return (cv.itemcget(texts[0], "text"),
+                        cv.itemcget(texts[0], "fill"))
+
+            app._bell_client_res = lambda: (1280, 960)
+            app.on_client_hover_start()
+            _tip_t, _tip_f = _tip_parts()
+            check("小窗:分辨率不支持 -> 悬停角色名红字「分辨率不支持」",
+                  _tip_t == "分辨率不支持" and _tip_f == _bad_red,
+                  f"{_tip_t!r} / {_tip_f}")
+            app.on_client_hover_end()
+            app._bell_client_res = lambda: (1024, 768)
+            app.on_client_hover_start()
+            _tip_t2, _tip_f2 = _tip_parts()
+            check("小窗:支持档 -> 悬停角色名显示分辨率(普通字色)",
+                  _tip_t2 == "1024×768" and _tip_f2 != _bad_red,
+                  f"{_tip_t2!r} / {_tip_f2}")
+            app.on_client_hover_end()
+            del app._bell_client_res
+
             # ---- 地图采集:界面入口已撤(底图内置),采集逻辑保留(直接调 record_map) ----
             shot = Image.new("RGB", (500, 320), (30, 30, 40))
             shot.paste((150, 120, 80), (150, 60, 362, 220))     # 212x160
@@ -2993,7 +3583,7 @@ def sec_bell_ui():
                     check("采集:画面里没有地图 -> 提示先按 Tab 打开地图",
                           app.record_map("宝象国") is False
                           and "画面里没有「宝象国」" in log_rec[-1], log_rec[-1])
-                with patch(mods=(tools_bell,),
+                with patch(mods=(tools_maps,),
                            MAP_BOUNDS_PATH=os.path.join(d, "没有这个文件.json")):
                     check("采集:没有坐标范围的图不给录(录了也标定不了)",
                           app.record_map("宝象国") is False
@@ -3007,7 +3597,26 @@ def sec_bell_ui():
             mb.showwarning = lambda *a, **k: warns.append(a)
             with patch(find_client_windows=lambda: (
                     [("梦幻西游 ONLINE", [800, 100, 1615, 780])], [])):
+                app._set("bell_client", "")
+                app.on_locate_clients()
+                app.root.update()
+                _c_red = ui_widgets.bell_palette(app.bell_mode)["red"]
+                check("定位:只有登录窗 -> 底行红字「请先登录角色」,不列列表",
+                      getattr(app, "bell_pick", None) is None
+                      and _chip_txt(app) == "请先登录角色"
+                      and _chip_fg(app) == _c_red
+                      and any("登录窗口" in _m for _m in app.logs),
+                      f"{_chip_txt(app)!r} {_chip_fg(app)}")
+                app.root.update()
+                _pump(app.root, 1900)
+                check("定位:登录提示过一会儿收回去",
+                      _chip_txt(app) == ui_bell.CLIENT_NONE,
+                      _chip_txt(app))
+            with patch(find_client_windows=lambda: (
+                    [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
+                      [800, 100, 1615, 780])], [])):
                 import types as _types
+                app._set("bell_client", "")
                 app.on_locate_clients()
                 app.root.update()
                 check("定位:单客户端也列出来(列表 1 行,不自动改选)",
@@ -3019,27 +3628,29 @@ def sec_bell_ui():
                 ui_bell._menu_click(app, _types.SimpleNamespace(
                     y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
                 app.root.update()
-                check("定位:单客户端点行 -> 角色名写进底行框(矩形不再显示)",
-                      _chip_txt(app)
-                      == ui_bell._fit_text(ui_bell._chip_font(app),
-                                           "梦幻西游 ONLINE",
-                                           ui_bell.chip_width(app)
-                                           - ui_bell.CHIP_PAD * 2)
-                      and not hasattr(app, "bell_coord_var"),
-                      _chip_txt(app))
-                check("定位:单客户端也当场存下选择",
-                      app.cfg["bell"]["bell_client"] == "梦幻西游 ONLINE",
-                      app.cfg['bell'].get('bell_client'))
+                check("定位:真实标题只把角色名写在底行",
+                      _chip_txt(app) == "祭花′"
+                      and app.cfg["bell"]["bell_client"].endswith(
+                          "祭花′[29024311])"),
+                      f"{_chip_txt(app)} / "
+                      f"{app.cfg['bell'].get('bell_client')}")
             with patch(find_client_windows=lambda: (
-                    [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
+                    [("梦幻西游 ONLINE", [0, 0, 815, 680]),
+                     ("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
                       [800, 100, 1615, 780])], [])):
                 app._set("bell_client", "")
                 app.on_locate_clients()
                 app.root.update()
+                check("定位:混开时登录窗不列进列表(只列已登录的那台)",
+                      getattr(app, "bell_pick", None) is not None
+                      and [c[0] for c in getattr(app, "_bell_pick_choices", [])]
+                      == ["祭花′"]
+                      and any("登录窗口已跳过" in _m for _m in app.logs),
+                      f"{getattr(app, '_bell_pick_choices', [])}")
                 ui_bell._menu_click(app, _types.SimpleNamespace(
                     y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
                 app.root.update()
-                check("定位:真实标题只把角色名写在底行",
+                check("定位:混开时点已登录那台 -> 正常选中",
                       _chip_txt(app) == "祭花′"
                       and app.cfg["bell"]["bell_client"].endswith(
                           "祭花′[29024311])"),
@@ -3168,23 +3779,20 @@ def sec_bell_ui():
                           f"{_chip_txt(app)!r} {_chip_fg(app)}")
                 finally:
                     _ct.windll.user32.SetCursorPos(_pt.x, _pt.y)
-            app._bell_size_warned = ""
+            # 分辨率不支持的客户端**照样列出**(与 keju 一致:列表不藏人),
+            # 也不弹框 —— 不支持这件事靠扫描后角色名变红来说(2026-11-12 用户定的)
+            core.find_client_canvases = lambda: ([
+                ("梦幻西游 ONLINE", (1280, 1024), [10, 10, 1281, 1015], 1.0,
+                 "tab")], [])
             with patch(find_client_windows=lambda: (
-                    [("梦幻西游 ONLINE", [0, 0, 1291, 1025])], [])):
+                    [("梦幻西游 ONLINE - (湖北2区[黄鹤楼] - 祭花′[29024311])",
+                      [0, 0, 1291, 1025])], [])):
                 app.on_locate_clients()
-                ui_bell._menu_click(app, _types.SimpleNamespace(
-                    y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
-                _warn_txt = " ".join(str(v) for v in warns)
-                check("定位:不支持的分辨率 -> 选完弹框只报支持的两档",
-                      len(warns) == 1 and "640×480" in _warn_txt
-                      and "800×600" in _warn_txt
-                      and "1291x1025" not in _warn_txt,
-                      _warn_txt or "没弹提醒")
-                app.on_locate_clients()
-                ui_bell._menu_click(app, _types.SimpleNamespace(
-                    y=ui_bell.MENU_PAD_V + ui_bell.ROW_H // 2))
-                check("定位:同一个不支持尺寸只弹一次(不每拍刷屏)",
-                      len(warns) == 1, str(warns))
+                check("定位:不支持分辨率的客户端照样列出,不弹框",
+                      len(getattr(app, "_bell_pick_choices", []) or []) == 1
+                      and warns == [],
+                      f"{getattr(app, '_bell_pick_choices', None)} {warns}")
+                ui_bell.close_client_menu(app)
 
             # ---- 截图区域:只采鼠标所在客户端那块 ----
             check("地图采集:矩形相交判断",

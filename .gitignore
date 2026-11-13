@@ -25,5 +25,7 @@ _*.png
 _ui_tmp/
 
 # 降妖伏魔的地图底图:**随仓库分发**(用户定的 2026-10-21:底图直接内置)。
-# 六张官方地图截图 + bounds.json(各图坐标范围)/calib.json(坐标↔像素标定)/
-# bell_layouts.json(对话框和任务栏的位置)一起进仓库,clone 下来即可用。
+# 六张官方地图截图 + bounds.json(各图坐标范围)/calib.json(坐标↔像素标定)
+# 进仓库,clone 下来即可用;对话框/任务栏的定稿比例在 client_common.py
+# (DLG_RATIOS / TRK_BOXES,随表退役 bell_layouts.json 已删),标注图存档
+# 在 docs/layout/。

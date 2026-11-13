@@ -1,8 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
-datas = [('data/bell_layouts.json', 'data'),
-         ('data/bell.ico', 'data'),
+datas = [('data/bell.ico', 'data'),
          ('data/maps', 'data/maps')]
 binaries = []
 hiddenimports = ['PIL', 'mss']
